@@ -193,11 +193,12 @@ Clients can listen for these events:
 
 ## Client-Side Integration
 
-In your JavaScript frontend, use the Socket.IO client to connect to the server:
+In your JavaScript frontend, use the Socket.IO client to connect to the server and automatically join conversation rooms from Laravel:
 
 ```javascript
 // Import Socket.IO client
 import { io } from "socket.io-client";
+import axios from "axios";
 
 // Connect to the Socket.IO server
 const socket = io("http://localhost:8001", {
@@ -210,29 +211,76 @@ const socket = io("http://localhost:8001", {
   },
 });
 
-// Join a conversation room
-socket.emit("join_conversation", { conversation_id: 1 }, (response) => {
-  console.log("Joined conversation:", response);
-});
+// Fetch conversations from Laravel backend and join rooms
+async function joinConversationRooms() {
+  try {
+    // Get conversations from Laravel endpoint
+    const response = await axios.get("/api/conversations", {
+      headers: {
+        Authorization: `Bearer ${yourAuthToken}`, // Your Laravel auth token
+      },
+    });
 
-// Listen for new messages
+    const conversations = response.data.data;
+
+    // Join each conversation room
+    conversations.forEach((conversation) => {
+      socket.emit(
+        "join_conversation",
+        { conversation_id: conversation.id },
+        (response) => {
+          console.log(`Joined conversation ${conversation.id}:`, response);
+        }
+      );
+    });
+
+    return conversations;
+  } catch (error) {
+    console.error("Failed to fetch conversations:", error);
+    return [];
+  }
+}
+
+// Call this function when your app initializes
+const conversations = await joinConversationRooms();
+
+// Set up event listeners for all conversations
 socket.on("new_message", (message) => {
   console.log("New message:", message);
-  // Update UI with new message
+  // Check if message belongs to one of our conversations
+  if (conversations.some((conv) => conv.id === message.conversation_id)) {
+    // Update UI with new message
+    // For example: updateConversationMessages(message);
+  }
 });
 
 // Listen for typing status updates
 socket.on("typing_status", (status) => {
   console.log("Typing status:", status);
-  // Update typing indicator UI
+  // Update typing indicator UI for the specific conversation
+  // For example: updateTypingIndicator(status.conversation_id, status.user_id, status.is_typing);
 });
 
 // Listen for message read updates
 socket.on("messages_read", (status) => {
   console.log("Messages read:", status);
-  // Update read receipts UI
+  // Update read receipts UI for the specific conversation
+  // For example: updateReadReceipts(status.conversation_id, status.user_id, status.message_ids);
+});
+
+// Rejoin rooms when socket reconnects
+socket.on("connect", async () => {
+  console.log("Socket reconnected, rejoining rooms...");
+  await joinConversationRooms();
 });
 ```
+
+With this approach, your client will:
+
+1. Fetch conversations from your Laravel backend
+2. Automatically join Socket.IO rooms for each conversation
+3. Listen for events and handle them appropriately based on conversation context
+4. Reconnect and rejoin rooms if the connection is lost
 
 ## Running in Production
 
