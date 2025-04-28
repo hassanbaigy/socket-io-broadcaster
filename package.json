@@ -1,0 +1,12 @@
+{
+  "name": "socket-io-chat-client",
+  "version": "1.0.0",
+  "description": "Test client for the Socket.IO chat server",
+  "main": "test_client.js",
+  "scripts": {
+    "test": "node test_client.js"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.2"
+  }
+}

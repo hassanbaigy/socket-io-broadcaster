@@ -1,0 +1,160 @@
+{
+  "info": {
+    "_postman_id": "1f5a6820-0bec-48a1-b8c7-c5a02a9dfc0a",
+    "name": "Chat Socket.IO Server",
+    "description": "A collection for testing the FastAPI and Socket.IO chat server's REST API endpoints.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "System",
+      "item": [
+        {
+          "name": "Status Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}",
+              "host": ["{{base_url}}"]
+            },
+            "description": "Health check endpoint that returns the status of the chat server."
+          },
+          "response": []
+        }
+      ],
+      "description": "System-level endpoints for checking server status."
+    },
+    {
+      "name": "Laravel Integration",
+      "item": [
+        {
+          "name": "Send Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"conversation_id\": 1,\n    \"user_id\": 123,\n    \"is_student\": true,\n    \"content\": \"Hello, how are you doing today?\",\n    \"type\": \"text\",\n    \"attachment_url\": null\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/send-message",
+              "host": ["{{base_url}}"],
+              "path": ["send-message"]
+            },
+            "description": "Send a new message to a conversation. This endpoint is called from the Laravel backend when a user sends a message."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Typing Status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"conversation_id\": 1,\n    \"user_id\": 123,\n    \"is_student\": true,\n    \"is_typing\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/typing-status",
+              "host": ["{{base_url}}"],
+              "path": ["typing-status"]
+            },
+            "description": "Update a user's typing status. This endpoint is called from the Laravel backend when a user starts or stops typing."
+          },
+          "response": []
+        },
+        {
+          "name": "Mark Messages as Read",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"conversation_id\": 1,\n    \"user_id\": 123,\n    \"is_student\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/mark-read",
+              "host": ["{{base_url}}"],
+              "path": ["mark-read"]
+            },
+            "description": "Mark messages as read. This endpoint is called from the Laravel backend when a user opens a conversation or explicitly marks messages as read."
+          },
+          "response": []
+        }
+      ],
+      "description": "API endpoints for the Laravel backend to communicate with the Socket.IO server."
+    },
+    {
+      "name": "Socket.IO Test",
+      "item": [
+        {
+          "name": "Test Message",
+          "protocolProfileBehavior": {
+            "disableBodyPruning": true
+          },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "# This is just a placeholder. Socket.IO events cannot be directly tested via HTTP requests.\n# Use a Socket.IO client library to test these features.\n\n# Example JavaScript code for testing the Socket.IO connection:\n\n```javascript\nconst io = require('socket.io-client');\n\n// Connect to the Socket.IO server\nconst socket = io('http://localhost:8001', {\n  auth: {\n    user_id: 123,\n    is_student: true\n  }\n});\n\n// Handle connection events\nsocket.on('connect', () => {\n  console.log('Connected to Socket.IO server');\n  \n  // Join a conversation room\n  socket.emit('join_conversation', { conversation_id: 1 }, (response) => {\n    console.log('Join conversation response:', response);\n    \n    // Send a test message\n    socket.emit('test_message', {\n      conversation_id: 1,\n      content: 'Test message from Socket.IO client',\n      user_id: 123\n    }, (response) => {\n      console.log('Test message response:', response);\n    });\n    \n    // Test typing status\n    socket.emit('test_typing', {\n      conversation_id: 1,\n      user_id: 123,\n      is_student: true,\n      is_typing: true\n    }, (response) => {\n      console.log('Test typing response:', response);\n    });\n  });\n});\n\n// Handle incoming messages\nsocket.on('new_message', (message) => {\n  console.log('Received new message:', message);\n});\n\n// Handle typing status updates\nsocket.on('typing_status', (status) => {\n  console.log('Received typing status:', status);\n});\n\n// Handle message read status updates\nsocket.on('messages_read', (status) => {\n  console.log('Received read status:', status);\n});\n\n// Handle disconnection\nsocket.on('disconnect', () => {\n  console.log('Disconnected from Socket.IO server');\n});\n```",
+              "options": {
+                "raw": {
+                  "language": "text"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/docs",
+              "host": ["{{base_url}}"],
+              "path": ["docs"]
+            },
+            "description": "Information on how to test Socket.IO functionality. This requires a Socket.IO client library."
+          },
+          "response": []
+        }
+      ],
+      "description": "Information on how to test the real-time Socket.IO functionality using a Socket.IO client."
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [""]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [""]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8001",
+      "type": "string",
+      "description": "Base URL for the Socket.IO chat server"
+    }
+  ]
+}
