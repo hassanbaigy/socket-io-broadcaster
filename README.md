@@ -25,6 +25,8 @@ This repository contains:
 
 ## Installation
 
+### Standard Installation
+
 1. Clone the repository:
 
 ```bash
@@ -52,6 +54,44 @@ python socket_server.py
 
 The server will start at `http://localhost:8001` by default.
 
+### Docker Installation
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/yourusername/tuneup-chat.git
+cd tuneup-chat
+```
+
+2. Set your API key in the environment (optional):
+
+```bash
+export TUNEUP_API_KEY=your_secure_api_key_here
+```
+
+3. Build and start the containers:
+
+```bash
+docker-compose up -d
+```
+
+This will start:
+
+- The Socket.IO server at `http://localhost:8001`
+- A web server for the client at `http://localhost:3000`
+
+4. View logs:
+
+```bash
+docker-compose logs -f
+```
+
+5. Stop the containers:
+
+```bash
+docker-compose down
+```
+
 ## Testing with the Included Clients
 
 ### Node.js Console Client
@@ -70,13 +110,15 @@ node test_client.js 1 your_api_key_here
 
 ### Browser Client
 
-1. Start a local web server:
+1. If running without Docker, start a local web server:
 
 ```bash
 npx http-server -p 3000
 ```
 
-2. Open `http://localhost:3000/web_client.html` in your browser
+2. Open in your browser:
+   - If using Docker: `http://localhost:3000/web_client.html`
+   - If using local server: `http://localhost:3000/web_client.html`
 
 ## Security
 

@@ -1,0 +1,27 @@
+version: "3"
+
+services:
+  socket-server:
+    build: .
+    ports:
+      - "8001:8001"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8001
+      - TUNEUP_API_KEY=${TUNEUP_API_KEY:-defaultapikey}
+    restart: unless-stopped
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+  # Simple HTTP server for static files (web client)
+  web-client:
+    image: node:14-alpine
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: npx http-server -p 3000
+    depends_on:
+      - socket-server
