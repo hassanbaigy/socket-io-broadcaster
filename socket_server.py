@@ -19,7 +19,8 @@ app = FastAPI(
     description="A FastAPI and Socket.IO server that powers chat functionality with 1-1 and group chat support with typing indicators",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    root_path="/broadcast"
 )
 
 # Setup CORS
