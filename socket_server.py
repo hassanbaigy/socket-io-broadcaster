@@ -20,7 +20,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    # root_path="/broadcast"ß
+    root_path="/broadcast"
 )
 
 # Setup CORS - Disabled for development/testing
