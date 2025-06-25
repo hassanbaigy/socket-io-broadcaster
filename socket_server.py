@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO)                 
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
@@ -20,17 +20,17 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    root_path="/broadcast"
+    # root_path="/broadcast"ß
 )
 
-# Setup CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Setup CORS - Disabled for development/testing
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=config.CORS_ORIGINS,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
 # Security dependency for API key validation
 async def verify_api_key(x_tuneup_api_key: str = Header(...)):
@@ -46,6 +46,11 @@ async def verify_api_key(x_tuneup_api_key: str = Header(...)):
 # Initialize Socket.IO server with custom authentication
 async def authenticate_socket(environ):
     """Authenticate Socket.IO connections using API key from headers"""
+    # Check if this is a CORS preflight request (OPTIONS method)
+    method = environ.get('REQUEST_METHOD', '').upper()
+    if method == 'OPTIONS':
+        return True  # Allow CORS preflight requests
+    
     headers = environ.get('asgi.scope', {}).get('headers', [])
     headers_dict = {k.decode('utf-8').lower(): v.decode('utf-8') 
                     for k, v in headers}
@@ -59,10 +64,11 @@ async def authenticate_socket(environ):
 # Initialize Socket.IO server
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins=config.CORS_ORIGINS,
+    cors_allowed_origins="*",
+    cors_credentials=False,
     logger=True,
     engineio_logger=True,
-    auth=authenticate_socket
+    auth=authenticate_socket,
 )
 
 # Create Socket.IO app
@@ -70,6 +76,7 @@ socket_app = socketio.ASGIApp(sio, app)
 
 # Pydantic models for API requests
 class MessageData(BaseModel):
+    message_id: int = Field(..., description="ID of the message")
     conversation_id: int = Field(..., description="ID of the conversation")
     user_id: int = Field(..., description="ID of the user sending the message")
     is_student: bool = Field(..., description="Whether the user is a student (true) or instructor (false)")
@@ -80,6 +87,7 @@ class MessageData(BaseModel):
     class Config:
         schema_extra = {
             "example": {
+                "message_id": 1,
                 "conversation_id": 1,
                 "user_id": 123,
                 "is_student": True,
@@ -192,7 +200,7 @@ async def api_send_message(data: MessageData):
     - **message_id**: ID of the sent message
     """
     message = {
-        "id": data.user_id,  # In production, this would be the actual message ID from database
+        "id": data.message_id, 
         "content": data.content,
         "type": data.type,
         "attachment_url": data.attachment_url,
@@ -203,12 +211,17 @@ async def api_send_message(data: MessageData):
         },
         "conversation_id": data.conversation_id
     }
+
+    logger.info(f"Message: {message}")
+    
+    room_name = f"conversation_{data.conversation_id}"
+    logger.info(f"Broadcasting to room: {room_name}")
     
     # Broadcast message to conversation room
-    await sio.emit("new_message", message, room=f"conversation_{data.conversation_id}")
+    await sio.emit("new_message", message, room=room_name)
     logger.info(f"Message from Laravel broadcast to conversation {data.conversation_id}")
     
-    return {"success": True, "message_id": data.user_id}
+    return {"success": True, "message_id": data.message_id}
 
 @app.post("/typing-status", response_model=SuccessResponse, tags=["Laravel Integration"], dependencies=[Depends(verify_api_key)])
 async def api_typing_status(data: TypingData):
@@ -298,6 +311,67 @@ async def emit_event(data: EmitEventData):
     
     return {"success": True}
 
+@app.post("/test-broadcast", response_model=SuccessResponse, tags=["Laravel Integration"], dependencies=[Depends(verify_api_key)])
+async def test_broadcast(data: dict):
+    """
+    Test endpoint to broadcast a message to all connected clients.
+    
+    This endpoint is for testing purposes only. It broadcasts a test message to all connected clients
+    to verify that the Socket.IO server is working properly.
+    
+    Parameters:
+    - **conversation_id**: ID of the conversation to broadcast to
+    - **message**: Test message to broadcast
+    
+    Returns:
+    - **success**: Whether the test message was successfully broadcast
+    """
+    conversation_id = data.get("conversation_id", 1)
+    message = data.get("message", "Test message from server")
+    
+    test_message = {
+        "id": 9999,
+        "content": message,
+        "type": "text",
+        "attachment_url": None,
+        "sent_at": datetime.now().isoformat(),
+        "sender": {
+            "id": 0,
+            "is_student": False
+        },
+        "conversation_id": conversation_id
+    }
+    
+    room_name = f"conversation_{conversation_id}"
+    
+    # Broadcast to specific room
+    await sio.emit("new_message", test_message, room=room_name)
+    logger.info(f"Test message broadcast to room {room_name}")
+    
+    # Also broadcast to all clients for testing
+    await sio.emit("test_broadcast", {"message": message, "room": room_name})
+    logger.info(f"Test broadcast sent to all clients")
+    
+    return {"success": True}
+
+
+@app.get("/connected-clients", tags=["System"], dependencies=[Depends(verify_api_key)])
+async def get_connected_clients():
+    """Get the status of the server."""
+        # Also log all connected clients for debugging
+
+    connected_clients_list = []
+    for sid, client_info in connected_clients.items():
+        connected_clients_list.append({
+            "sid": sid,
+            "user_id": client_info.get('user_id', 'unknown'),
+            "user_type": client_info.get('user_type', 'unknown'),
+            "rooms": client_info.get('rooms', [])
+        })
+
+    logger.info(f"Total connected clients: {len(connected_clients)}")
+    return {"connected_clients": connected_clients_list}
+
 # Socket.IO event handlers
 @sio.event
 async def connect(sid, environ, auth):
@@ -331,7 +405,7 @@ async def join_conversation(sid, data):
         return {"error": "Missing conversation_id"}
     
     room_name = f"conversation_{conversation_id}"
-    await sio.enter_room(sid, room_name)
+    sio.enter_room(sid, room_name)
     
     # Update client's room list
     if sid in connected_clients:
@@ -339,6 +413,7 @@ async def join_conversation(sid, data):
             connected_clients[sid]["rooms"].append(room_name)
     
     logger.info(f"Client {sid} joined room {room_name}")
+    logger.info(f"Client {sid} is now in rooms: {connected_clients.get(sid, {}).get('rooms', [])}")
     
     return {"success": True, "conversation_id": conversation_id}
 
@@ -351,7 +426,7 @@ async def leave_room(sid, data):
         return {"error": "Missing conversation_id"}
     
     room_name = f"conversation_{conversation_id}"
-    await sio.leave_room(sid, room_name)
+    sio.leave_room(sid, room_name)
     
     # Update client's room list
     if sid in connected_clients and room_name in connected_clients[sid]["rooms"]:

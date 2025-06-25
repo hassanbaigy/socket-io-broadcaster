@@ -17,9 +17,9 @@ if not API_KEY:
 
 # CORS settings
 CORS_ORIGINS: List[str] = [
-    "http://localhost:3000",  # React frontend
-    "http://localhost:8000",  # Laravel backend
-    "http://127.0.0.1:3000",
+    "http://hassantest.tuneup.localhost:8000",
+    "http://localhost:8000",
     "http://127.0.0.1:8000",
+    "http://localhost:3000",
     "*"  # Allow all origins in development
 ] 
