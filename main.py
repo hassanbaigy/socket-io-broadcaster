@@ -3,6 +3,7 @@ Main entry point for the FastAPI Socket.IO Chat Server.
 """
 import uvicorn
 import config
+from fastapi import APIRouter
 
 if __name__ == "__main__":
     print(f"Starting chat server at {config.HOST}:{config.PORT}")

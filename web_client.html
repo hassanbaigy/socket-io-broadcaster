@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Socket.IO Chat Client</title>
+    <title>Socket.IO Multi-Tenant Chat Client</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -45,7 +45,8 @@
         border-radius: 4px;
         border: 1px solid #ccc;
       }
-      input[type="text"] {
+      input[type="text"],
+      input[type="number"] {
         flex: 1;
         margin-right: 10px;
         font-size: 16px;
@@ -94,25 +95,40 @@
       .error {
         color: #e06c75;
       }
+      .namespace {
+        color: #c678dd;
+        font-weight: bold;
+      }
       label {
         display: inline-block;
-        width: 100px;
+        width: 120px;
         margin-right: 10px;
       }
       .form-group {
         margin-bottom: 10px;
       }
+      .connection-info {
+        background-color: #e8f5e8;
+        padding: 10px;
+        border-radius: 5px;
+        margin-bottom: 10px;
+        display: none;
+      }
     </style>
   </head>
   <body>
     <div class="container">
-      <h1>Socket.IO Chat Client</h1>
+      <h1>Socket.IO Multi-Tenant Chat Client</h1>
 
       <div class="config-panel">
         <h2>Connection Settings</h2>
         <div class="form-group">
           <label for="api-key">API Key:</label>
           <input type="text" id="api-key" placeholder="Enter your API key" />
+        </div>
+        <div class="form-group">
+          <label for="tenant-id">Tenant ID:</label>
+          <input type="number" id="tenant-id" value="1" min="1" />
         </div>
         <div class="form-group">
           <label for="conversation">Conversation:</label>
@@ -133,10 +149,26 @@
         <button id="disconnect-btn" disabled>Disconnect</button>
       </div>
 
+      <div id="connection-info" class="connection-info">
+        <div>
+          <strong>Namespace:</strong>
+          <span id="namespace-display">Not connected</span>
+        </div>
+        <div>
+          <strong>Socket ID:</strong>
+          <span id="socket-id-display">Not connected</span>
+        </div>
+      </div>
+
       <div id="console" class="console">
-        <div class="status">Welcome to the Socket.IO Chat Client</div>
+        <div class="status">
+          Welcome to the Socket.IO Multi-Tenant Chat Client
+        </div>
         <div class="status">
           Configure your connection settings and click Connect
+        </div>
+        <div class="status">
+          Each tenant gets its own isolated namespace for better security
         </div>
       </div>
 
@@ -151,6 +183,8 @@
       </div>
 
       <div id="control-buttons" class="control-buttons" style="display: none">
+        <button id="join-btn">Join Conversation</button>
+        <button id="leave-btn">Leave Conversation</button>
         <button id="typing-btn">Send Typing</button>
         <button id="read-btn">Mark Read</button>
       </div>
@@ -161,36 +195,61 @@
     <script>
       // DOM elements
       const apiKeyInput = document.getElementById("api-key");
+      const tenantIdInput = document.getElementById("tenant-id");
       const conversationInput = document.getElementById("conversation");
       const userIdInput = document.getElementById("user-id");
       const userTypeSelect = document.getElementById("user-type");
       const connectBtn = document.getElementById("connect-btn");
       const disconnectBtn = document.getElementById("disconnect-btn");
+      const connectionInfo = document.getElementById("connection-info");
+      const namespaceDisplay = document.getElementById("namespace-display");
+      const socketIdDisplay = document.getElementById("socket-id-display");
       const consoleEl = document.getElementById("console");
       const messageInput = document.getElementById("message");
       const sendBtn = document.getElementById("send-btn");
       const messageInputContainer = document.getElementById("message-input");
       const controlButtons = document.getElementById("control-buttons");
+      const joinBtn = document.getElementById("join-btn");
+      const leaveBtn = document.getElementById("leave-btn");
       const typingBtn = document.getElementById("typing-btn");
       const readBtn = document.getElementById("read-btn");
 
       // Socket.IO connection
       let socket = null;
+      let isConnected = false;
+      let currentNamespace = null;
+      let currentTenantId = null;
+      let hasJoinedConversation = false;
       let isTyping = false;
       let typingTimeout = null;
 
       // Connect to the Socket.IO server
       connectBtn.addEventListener("click", () => {
         const apiKey = apiKeyInput.value.trim();
+        const tenantId = parseInt(tenantIdInput.value);
+
         if (!apiKey) {
           logToConsole("Please enter an API key", "error");
           return;
         }
 
-        // Create Socket.IO connection
-        socket = io("http://localhost:8001", {
+        if (!tenantId || tenantId < 1) {
+          logToConsole("Please enter a valid tenant ID", "error");
+          return;
+        }
+
+        // Construct namespace and URL
+        currentTenantId = tenantId;
+        currentNamespace = `/tenant_${tenantId}`;
+        const namespaceUrl = `http://localhost:8001${currentNamespace}`;
+
+        logToConsole(`Connecting to namespace: ${currentNamespace}`, "status");
+
+        // Create Socket.IO connection to tenant namespace
+        socket = io(namespaceUrl, {
           auth: {
             id: parseInt(userIdInput.value),
+            tenant_id: tenantId,
             isStudent: userTypeSelect.value === "student",
           },
           extraHeaders: {
@@ -200,65 +259,172 @@
 
         // Connection events
         socket.on("connect", () => {
-          logToConsole(
-            "Connected to server with socket ID: " + socket.id,
-            "status"
-          );
+          isConnected = true;
+          logToConsole(`Connected to namespace: ${currentNamespace}`, "status");
+          logToConsole(`Socket ID: ${socket.id}`, "status");
 
-          // Join conversation
-          const conversationId = parseInt(conversationInput.value);
-          socket.emit(
-            "join_conversation",
-            { conversation_id: conversationId },
-            (response) => {
-              if (response.success) {
-                logToConsole(
-                  `Successfully joined conversation ${conversationId}`,
-                  "status"
-                );
+          // Update UI
+          connectBtn.disabled = true;
+          disconnectBtn.disabled = false;
+          connectionInfo.style.display = "block";
+          namespaceDisplay.textContent = currentNamespace;
+          socketIdDisplay.textContent = socket.id;
+          messageInputContainer.style.display = "flex";
+          controlButtons.style.display = "flex";
+        });
 
-                // Enable message input
-                messageInputContainer.style.display = "flex";
-                controlButtons.style.display = "flex";
+        socket.on("disconnect", () => {
+          isConnected = false;
+          hasJoinedConversation = false;
+          logToConsole("Disconnected from server", "status");
 
-                // Setup event listeners for messages
-                setupEventListeners();
-
-                // Disable connection inputs, enable disconnect
-                setConnectionState(true);
-              } else {
-                logToConsole(
-                  "Failed to join conversation: " + JSON.stringify(response),
-                  "error"
-                );
-              }
-            }
-          );
+          // Update UI
+          connectBtn.disabled = false;
+          disconnectBtn.disabled = true;
+          connectionInfo.style.display = "none";
+          messageInputContainer.style.display = "none";
+          controlButtons.style.display = "none";
         });
 
         socket.on("connect_error", (error) => {
-          logToConsole("Connection error: " + error.message, "error");
-          if (error.message.includes("auth")) {
-            logToConsole("This may be due to an invalid API key", "error");
+          logToConsole(`Connection error: ${error.message}`, "error");
+        });
+
+        // Chat events
+        socket.on("new_message", (message) => {
+          logToConsole(
+            `Message from ${message.sender.id} (${
+              message.sender.is_student ? "Student" : "Instructor"
+            }): ${message.content}`,
+            "message"
+          );
+        });
+
+        socket.on("typing_status", (data) => {
+          if (data.is_typing) {
+            logToConsole(`User ${data.user_id} is typing...`, "typing");
+          } else {
+            logToConsole(`User ${data.user_id} stopped typing`, "typing");
           }
         });
 
-        socket.on("disconnect", (reason) => {
-          logToConsole("Disconnected from server: " + reason, "status");
-          setConnectionState(false);
+        socket.on("messages_read", (data) => {
+          logToConsole(
+            `User ${data.user_id} read messages in conversation ${data.conversation_id}`,
+            "status"
+          );
+        });
+
+        socket.on("test_broadcast", (data) => {
+          logToConsole(
+            `Test broadcast: ${data.message} (Room: ${data.room}, Tenant: ${data.tenant_id})`,
+            "status"
+          );
         });
       });
 
-      // Disconnect from the server
+      // Disconnect from server
       disconnectBtn.addEventListener("click", () => {
         if (socket) {
           socket.disconnect();
-          logToConsole("Manually disconnected from server", "status");
-          setConnectionState(false);
+          socket = null;
+          currentNamespace = null;
+          currentTenantId = null;
         }
       });
 
-      // Send a message
+      // Join conversation
+      joinBtn.addEventListener("click", () => {
+        if (!isConnected) {
+          logToConsole("Not connected to server", "error");
+          return;
+        }
+
+        const conversationId = parseInt(conversationInput.value);
+        logToConsole(`Joining conversation ${conversationId}...`, "status");
+
+        socket.emit(
+          "join_conversation",
+          { conversation_id: conversationId },
+          (response) => {
+            if (response.error) {
+              logToConsole(
+                `Error joining conversation: ${response.error}`,
+                "error"
+              );
+            } else {
+              hasJoinedConversation = true;
+              logToConsole(
+                `Joined conversation ${conversationId} in namespace ${response.namespace}`,
+                "status"
+              );
+            }
+          }
+        );
+      });
+
+      // Leave conversation
+      leaveBtn.addEventListener("click", () => {
+        if (!isConnected || !hasJoinedConversation) {
+          logToConsole("Not connected or not in a conversation", "error");
+          return;
+        }
+
+        const conversationId = parseInt(conversationInput.value);
+        logToConsole(`Leaving conversation ${conversationId}...`, "status");
+
+        socket.emit(
+          "leave_room",
+          { conversation_id: conversationId },
+          (response) => {
+            if (response.error) {
+              logToConsole(
+                `Error leaving conversation: ${response.error}`,
+                "error"
+              );
+            } else {
+              hasJoinedConversation = false;
+              logToConsole(`Left conversation ${conversationId}`, "status");
+            }
+          }
+        );
+      });
+
+      // Send message
+      function sendMessage() {
+        if (!isConnected || !hasJoinedConversation) {
+          logToConsole("Not connected or not in a conversation", "error");
+          return;
+        }
+
+        const message = messageInput.value.trim();
+        if (!message) return;
+
+        const conversationId = parseInt(conversationInput.value);
+        const userId = parseInt(userIdInput.value);
+        const isStudent = userTypeSelect.value === "student";
+
+        logToConsole(`Sending message: ${message}`, "status");
+
+        socket.emit(
+          "test_message",
+          {
+            conversation_id: conversationId,
+            content: message,
+            user_id: userId,
+            is_student: isStudent,
+          },
+          (response) => {
+            if (response.error) {
+              logToConsole(`Error sending message: ${response.error}`, "error");
+            } else {
+              logToConsole("Message sent successfully", "status");
+              messageInput.value = "";
+            }
+          }
+        );
+      }
+
       sendBtn.addEventListener("click", sendMessage);
       messageInput.addEventListener("keypress", (e) => {
         if (e.key === "Enter") {
@@ -268,215 +434,98 @@
 
       // Send typing status
       typingBtn.addEventListener("click", () => {
-        if (!socket) return;
+        if (!isConnected || !hasJoinedConversation) {
+          logToConsole("Not connected or not in a conversation", "error");
+          return;
+        }
 
         const conversationId = parseInt(conversationInput.value);
         const userId = parseInt(userIdInput.value);
         const isStudent = userTypeSelect.value === "student";
 
-        socket.emit("typing_status", {
-          conversation_id: conversationId,
-          user_id: userId,
-          is_student: isStudent,
-          is_typing: true,
-        });
+        isTyping = !isTyping;
+        typingBtn.textContent = isTyping ? "Stop Typing" : "Send Typing";
 
-        logToConsole("Sent typing indicator", "status");
-
-        // Auto-stop typing after 5 seconds
-        setTimeout(() => {
-          socket.emit("typing_status", {
+        socket.emit(
+          "typing_status",
+          {
             conversation_id: conversationId,
             user_id: userId,
             is_student: isStudent,
-            is_typing: false,
-          });
-          logToConsole("Stopped typing indicator", "status");
-        }, 5000);
+            is_typing: isTyping,
+          },
+          (response) => {
+            if (response.error) {
+              logToConsole(
+                `Error updating typing status: ${response.error}`,
+                "error"
+              );
+            } else {
+              logToConsole(
+                `Typing status updated: ${
+                  isTyping ? "typing" : "stopped typing"
+                }`,
+                "status"
+              );
+            }
+          }
+        );
       });
 
       // Mark messages as read
       readBtn.addEventListener("click", () => {
-        if (!socket) return;
-
-        const conversationId = parseInt(conversationInput.value);
-        const userId = parseInt(userIdInput.value);
-        const isStudent = userTypeSelect.value === "student";
-
-        socket.emit("messages_read", {
-          conversation_id: conversationId,
-          user_id: userId,
-          is_student: isStudent,
-        });
-
-        logToConsole("Marked messages as read", "status");
-      });
-
-      // Handle typing input
-      messageInput.addEventListener("input", () => {
-        if (!socket || isTyping) return;
-
-        const conversationId = parseInt(conversationInput.value);
-        const userId = parseInt(userIdInput.value);
-        const isStudent = userTypeSelect.value === "student";
-
-        // Start typing
-        isTyping = true;
-        socket.emit("typing_status", {
-          conversation_id: conversationId,
-          user_id: userId,
-          is_student: isStudent,
-          is_typing: true,
-        });
-
-        // Clear existing timeout
-        if (typingTimeout) {
-          clearTimeout(typingTimeout);
+        if (!isConnected || !hasJoinedConversation) {
+          logToConsole("Not connected or not in a conversation", "error");
+          return;
         }
 
-        // Set timeout to stop typing after 2 seconds of inactivity
-        typingTimeout = setTimeout(() => {
-          isTyping = false;
-          socket.emit("typing_status", {
+        const conversationId = parseInt(conversationInput.value);
+        const userId = parseInt(userIdInput.value);
+        const isStudent = userTypeSelect.value === "student";
+
+        socket.emit(
+          "messages_read",
+          {
             conversation_id: conversationId,
             user_id: userId,
             is_student: isStudent,
-            is_typing: false,
-          });
-        }, 2000);
+          },
+          (response) => {
+            if (response.error) {
+              logToConsole(
+                `Error marking messages as read: ${response.error}`,
+                "error"
+              );
+            } else {
+              logToConsole("Messages marked as read", "status");
+            }
+          }
+        );
       });
 
-      // Helper Functions
-      function setupEventListeners() {
-        // Listen for new messages
-        socket.on("new_message", (message) => {
-          const sender = message.sender
-            ? `User ${message.sender.id} (${
-                message.sender.is_student ? "Student" : "Instructor"
-              })`
-            : "Unknown sender";
+      // Helper function to log messages to console
+      function logToConsole(message, type = "info") {
+        const timestamp = new Date().toLocaleTimeString();
+        const logEntry = document.createElement("div");
+        logEntry.className = type;
 
-          const html = `
-                    <div class="message">
-                        <div><span class="sender">${sender}:</span> <span class="content">${message.content}</span></div>
-                        <div class="time">Sent: ${message.sent_at}</div>
-                    </div>
-                `;
-          logToConsole(html);
-        });
-
-        // Listen for typing status updates
-        socket.on("typing_status", (status) => {
-          const users = status.typing_users || [];
-
-          if (users.length === 0) {
-            removeTypingIndicator();
-          } else {
-            const typingUsers = users
-              .map(
-                (user) =>
-                  `User ${user.user_id} (${
-                    user.is_student ? "Student" : "Instructor"
-                  })`
-              )
-              .join(", ");
-
-            showTypingIndicator(`${typingUsers} is typing...`);
-          }
-        });
-
-        // Listen for message read updates
-        socket.on("messages_read", (status) => {
-          logToConsole(
-            `User ${status.user_id} (${
-              status.is_student ? "Student" : "Instructor"
-            }) has read messages`,
-            "status"
-          );
-        });
-      }
-
-      function sendMessage() {
-        if (!socket) return;
-
-        const message = messageInput.value.trim();
-        if (!message) return;
-
-        const conversationId = parseInt(conversationInput.value);
-        const userId = parseInt(userIdInput.value);
-
-        // Send message using test_message event
-        socket.emit("test_message", {
-          conversation_id: conversationId,
-          content: message,
-          user_id: userId,
-          is_student: userTypeSelect.value === "student",
-        });
-
-        // Clear input
-        messageInput.value = "";
-        messageInput.focus();
-      }
-
-      function logToConsole(message, type = "") {
-        const div = document.createElement("div");
-        div.className = type;
-
-        // If message is HTML, use innerHTML, otherwise use innerText
-        if (message.includes("<")) {
-          div.innerHTML = message;
+        if (type === "message") {
+          logEntry.innerHTML = `<span class="time">${timestamp}</span> ${message}`;
+        } else if (type === "status" && message.includes("namespace")) {
+          logEntry.innerHTML = `<span class="time">${timestamp}</span> <span class="namespace">${message}</span>`;
         } else {
-          div.innerText = message;
+          logEntry.innerHTML = `<span class="time">${timestamp}</span> ${message}`;
         }
 
-        consoleEl.appendChild(div);
+        consoleEl.appendChild(logEntry);
         consoleEl.scrollTop = consoleEl.scrollHeight;
       }
 
-      function setConnectionState(connected) {
-        // Enable/disable form fields
-        apiKeyInput.disabled = connected;
-        conversationInput.disabled = connected;
-        userIdInput.disabled = connected;
-        userTypeSelect.disabled = connected;
-
-        // Toggle buttons
-        connectBtn.disabled = connected;
-        disconnectBtn.disabled = !connected;
-
-        // Show/hide message input
-        messageInputContainer.style.display = connected ? "flex" : "none";
-        controlButtons.style.display = connected ? "flex" : "none";
-
-        // If disconnected, clear socket and remove event listeners
-        if (!connected && socket) {
-          socket = null;
-        }
-      }
-
-      // Typing indicator management
-      let typingIndicator = null;
-
-      function showTypingIndicator(text) {
-        // Remove existing indicator
-        removeTypingIndicator();
-
-        // Create new indicator
-        typingIndicator = document.createElement("div");
-        typingIndicator.className = "typing";
-        typingIndicator.id = "typing-indicator";
-        typingIndicator.innerText = text;
-
-        consoleEl.appendChild(typingIndicator);
+      // Auto-scroll console
+      const observer = new MutationObserver(() => {
         consoleEl.scrollTop = consoleEl.scrollHeight;
-      }
-
-      function removeTypingIndicator() {
-        const existingIndicator = document.getElementById("typing-indicator");
-        if (existingIndicator) {
-          existingIndicator.remove();
-        }
-      }
+      });
+      observer.observe(consoleEl, { childList: true });
     </script>
   </body>
 </html>

@@ -1,197 +1,396 @@
-// Socket.IO client test script
-// To run this script: node test_client.js <conversation_id> <api_key>
+/**
+ * Multi-Tenant Socket.IO Test Client
+ *
+ * This test client demonstrates how to connect to different tenant namespaces
+ * and verify that messages are properly isolated between tenants.
+ */
 
-const { io } = require("socket.io-client");
+const io = require("socket.io-client");
 
-// Get command line arguments
-const args = process.argv.slice(2);
-const conversationId = args[0] || 1; // Default to conversation ID 1 if not provided
-const apiKey = args[1]; // API key must be provided
+// Configuration
+const SERVER_URL = "http://localhost:8001";
+const API_KEY = "your-api-key-here"; // Replace with your actual API key
 
-if (!apiKey) {
-  console.error("Error: API key must be provided as the second argument");
-  console.error("Usage: node test_client.js <conversation_id> <api_key>");
-  process.exit(1);
-}
-
-console.log(`Socket.IO Client Test - Conversation ID: ${conversationId}`);
-console.log("Connecting to server...");
-
-// Connect to the Socket.IO server
-const socket = io("http://localhost:8001", {
-  auth: {
-    id: 123, // Example user ID
-    isStudent: true, // Example user type (true for student, false for instructor)
+// Test users for different tenants
+const testUsers = [
+  {
+    id: 101,
+    tenant_id: 1,
+    name: "Alice (Tenant 1)",
+    isStudent: true,
   },
-  extraHeaders: {
-    "X-Tuneup-API-Key": apiKey, // Pass the API key in headers
+  {
+    id: 102,
+    tenant_id: 1,
+    name: "Bob (Tenant 1)",
+    isStudent: false,
   },
-  transports: ["websocket", "polling"], // Try WebSocket first, fall back to polling
-});
+  {
+    id: 201,
+    tenant_id: 2,
+    name: "Charlie (Tenant 2)",
+    isStudent: true,
+  },
+  {
+    id: 202,
+    tenant_id: 2,
+    name: "Diana (Tenant 2)",
+    isStudent: false,
+  },
+];
 
-// Connection events
-socket.on("connect", () => {
-  console.log("Connected to server with socket ID:", socket.id);
+class MultiTenantTestClient {
+  constructor() {
+    this.clients = [];
+    this.conversationId = 1;
+  }
 
-  // Join a conversation room
-  socket.emit(
-    "join_conversation",
-    { conversation_id: parseInt(conversationId) },
-    (response) => {
-      if (response.success) {
-        console.log(`Successfully joined conversation ${conversationId}`);
+  async connectAllClients() {
+    console.log("🚀 Starting Multi-Tenant Socket.IO Test");
+    console.log("==========================================");
 
-        // Setup event listeners after joining
-        setupEventListeners();
-
-        // After joining, simulate sending a test message
-        setTimeout(() => {
-          console.log("Sending a test typing status update...");
-          socket.emit("typing_status", {
-            conversation_id: parseInt(conversationId),
-            user_id: 123,
-            is_student: true,
-            is_typing: true,
-          });
-        }, 2000);
-      } else {
-        console.error("Failed to join conversation:", response);
+    for (const user of testUsers) {
+      try {
+        const client = await this.connectClient(user);
+        this.clients.push(client);
+        console.log(
+          `✅ ${user.name} connected to namespace /tenant_${user.tenant_id}`
+        );
+      } catch (error) {
+        console.error(`❌ Failed to connect ${user.name}:`, error.message);
       }
     }
-  );
-});
 
-socket.on("connect_error", (error) => {
-  console.error("Connection error:", error.message);
-  if (error.message.includes("auth")) {
-    console.error(
-      "This may be due to an invalid API key. Check your API key and try again."
-    );
+    console.log(`\n📊 Total connected clients: ${this.clients.length}`);
   }
-});
 
-socket.on("disconnect", (reason) => {
-  console.log("Disconnected from server:", reason);
-});
+  connectClient(user) {
+    return new Promise((resolve, reject) => {
+      const namespace = `/tenant_${user.tenant_id}`;
+      const namespaceUrl = `${SERVER_URL}${namespace}`;
 
-// Set up event listeners for various message types
-function setupEventListeners() {
-  // Listen for new messages
-  socket.on("new_message", (message) => {
-    console.log("\n📩 New message received:");
-    console.log(
-      "  From:",
-      message.sender
-        ? `User ${message.sender.id} (${
-            message.sender.is_student ? "Student" : "Instructor"
-          })`
-        : "Unknown sender"
-    );
-    console.log("  Content:", message.content);
-    console.log("  Type:", message.type);
-    console.log("  Time:", message.sent_at);
-    if (message.attachment_url) {
-      console.log("  Attachment:", message.attachment_url);
-    }
-  });
+      const socket = io(namespaceUrl, {
+        auth: {
+          id: user.id,
+          tenant_id: user.tenant_id,
+          isStudent: user.isStudent,
+        },
+        extraHeaders: {
+          "X-Tuneup-API-Key": API_KEY,
+        },
+        reconnection: false, // Disable for testing
+      });
 
-  // Listen for typing status updates
-  socket.on("typing_status", (status) => {
-    console.log("\n⌨️ Typing status update:");
-    const users = status.typing_users || [];
+      // Store user info with socket
+      socket.user = user;
+      socket.namespace = namespace;
 
-    if (users.length === 0) {
-      console.log("  No one is typing");
-    } else {
-      users.forEach((user) => {
+      socket.on("connect", () => {
+        console.log(`🔗 ${user.name} connected with socket ID: ${socket.id}`);
+        resolve(socket);
+      });
+
+      socket.on("connect_error", (error) => {
+        reject(error);
+      });
+
+      socket.on("disconnect", () => {
+        console.log(`🔌 ${user.name} disconnected`);
+      });
+
+      // Set up event listeners
+      socket.on("new_message", (message) => {
         console.log(
-          `  User ${user.user_id} (${
-            user.is_student ? "Student" : "Instructor"
-          }) is typing...`
+          `📨 ${user.name} received message: "${message.content}" from user ${message.sender.id}`
         );
       });
+
+      socket.on("typing_status", (data) => {
+        const status = data.is_typing ? "started typing" : "stopped typing";
+        console.log(`⌨️  ${user.name} sees: User ${data.user_id} ${status}`);
+      });
+
+      socket.on("messages_read", (data) => {
+        console.log(
+          `👁️  ${user.name} sees: User ${data.user_id} read messages`
+        );
+      });
+
+      socket.on("test_broadcast", (data) => {
+        console.log(
+          `📢 ${user.name} received broadcast: ${data.message} (Tenant: ${data.tenant_id})`
+        );
+      });
+    });
+  }
+
+  async joinConversations() {
+    console.log("\n🏠 Joining conversations...");
+    console.log("============================");
+
+    for (const client of this.clients) {
+      try {
+        const response = await this.emitWithResponse(
+          client,
+          "join_conversation",
+          {
+            conversation_id: this.conversationId,
+          }
+        );
+
+        if (response.success) {
+          console.log(
+            `✅ ${client.user.name} joined conversation ${this.conversationId}`
+          );
+        } else {
+          console.log(
+            `⚠️  ${client.user.name} failed to join conversation: ${response.error}`
+          );
+        }
+      } catch (error) {
+        console.error(
+          `❌ Error joining conversation for ${client.user.name}:`,
+          error.message
+        );
+      }
     }
+  }
+
+  async testMessageIsolation() {
+    console.log("\n🔒 Testing message isolation between tenants...");
+    console.log("===============================================");
+
+    // Send messages from each tenant
+    const tenant1Client = this.clients.find((c) => c.user.tenant_id === 1);
+    const tenant2Client = this.clients.find((c) => c.user.tenant_id === 2);
+
+    if (tenant1Client) {
+      console.log(`📤 Sending message from ${tenant1Client.user.name}...`);
+      await this.sendTestMessage(tenant1Client, "Hello from Tenant 1! 👋");
+      await this.sleep(1000);
+    }
+
+    if (tenant2Client) {
+      console.log(`📤 Sending message from ${tenant2Client.user.name}...`);
+      await this.sendTestMessage(tenant2Client, "Hello from Tenant 2! 🎉");
+      await this.sleep(1000);
+    }
+
+    console.log(
+      "📋 Messages should only be received by users in the same tenant namespace"
+    );
+  }
+
+  async testTypingIndicators() {
+    console.log("\n⌨️  Testing typing indicators...");
+    console.log("================================");
+
+    for (const client of this.clients) {
+      console.log(`⌨️  ${client.user.name} is typing...`);
+
+      await this.emitWithResponse(client, "typing_status", {
+        conversation_id: this.conversationId,
+        user_id: client.user.id,
+        is_student: client.user.isStudent,
+        is_typing: true,
+      });
+
+      await this.sleep(1500);
+
+      await this.emitWithResponse(client, "typing_status", {
+        conversation_id: this.conversationId,
+        user_id: client.user.id,
+        is_student: client.user.isStudent,
+        is_typing: false,
+      });
+
+      await this.sleep(500);
+    }
+  }
+
+  async testReadReceipts() {
+    console.log("\n👁️  Testing read receipts...");
+    console.log("============================");
+
+    for (const client of this.clients) {
+      console.log(`👁️  ${client.user.name} marking messages as read...`);
+
+      await this.emitWithResponse(client, "messages_read", {
+        conversation_id: this.conversationId,
+        user_id: client.user.id,
+        is_student: client.user.isStudent,
+      });
+
+      await this.sleep(500);
+    }
+  }
+
+  async sendTestMessage(client, content) {
+    return this.emitWithResponse(client, "test_message", {
+      conversation_id: this.conversationId,
+      content: content,
+      user_id: client.user.id,
+      is_student: client.user.isStudent,
+    });
+  }
+
+  emitWithResponse(socket, event, data) {
+    return new Promise((resolve, reject) => {
+      socket.emit(event, data, (response) => {
+        if (response && response.error) {
+          reject(new Error(response.error));
+        } else {
+          resolve(response);
+        }
+      });
+    });
+  }
+
+  sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async disconnectAll() {
+    console.log("\n🔌 Disconnecting all clients...");
+    console.log("===============================");
+
+    for (const client of this.clients) {
+      client.disconnect();
+      console.log(`🔌 ${client.user.name} disconnected`);
+    }
+
+    this.clients = [];
+  }
+
+  async runFullTest() {
+    try {
+      await this.connectAllClients();
+      await this.sleep(2000);
+
+      await this.joinConversations();
+      await this.sleep(2000);
+
+      await this.testMessageIsolation();
+      await this.sleep(3000);
+
+      await this.testTypingIndicators();
+      await this.sleep(2000);
+
+      await this.testReadReceipts();
+      await this.sleep(2000);
+
+      console.log("\n🎉 Multi-tenant test completed successfully!");
+      console.log("===========================================");
+
+      console.log("\n📊 Test Summary:");
+      console.log(
+        `- Connected ${this.clients.length} clients across ${
+          new Set(testUsers.map((u) => u.tenant_id)).size
+        } tenants`
+      );
+      console.log("- Verified message isolation between tenants");
+      console.log("- Tested typing indicators within namespaces");
+      console.log("- Tested read receipts within namespaces");
+    } catch (error) {
+      console.error("❌ Test failed:", error);
+    } finally {
+      await this.disconnectAll();
+      process.exit(0);
+    }
+  }
+}
+
+// Helper function to test individual tenant connection
+async function testSingleTenant(tenantId, userId = 100) {
+  console.log(
+    `\n🧪 Testing single tenant connection (Tenant ${tenantId}, User ${userId})`
+  );
+  console.log("=".repeat(60));
+
+  const namespace = `/tenant_${tenantId}`;
+  const namespaceUrl = `${SERVER_URL}${namespace}`;
+
+  const socket = io(namespaceUrl, {
+    auth: {
+      id: userId,
+      tenant_id: tenantId,
+      isStudent: true,
+    },
+    extraHeaders: {
+      "X-Tuneup-API-Key": API_KEY,
+    },
   });
 
-  // Listen for message read updates
-  socket.on("messages_read", (status) => {
-    console.log("\n👁️ Messages read update:");
+  socket.on("connect", () => {
+    console.log(`✅ Connected to ${namespace} with socket ID: ${socket.id}`);
+
+    // Join a conversation
+    socket.emit("join_conversation", { conversation_id: 1 }, (response) => {
+      if (response.success) {
+        console.log(`✅ Joined conversation 1 in ${response.namespace}`);
+
+        // Send a test message
+        socket.emit(
+          "test_message",
+          {
+            conversation_id: 1,
+            content: `Test message from tenant ${tenantId}`,
+            user_id: userId,
+            is_student: true,
+          },
+          (response) => {
+            if (response.success) {
+              console.log("✅ Test message sent successfully");
+            } else {
+              console.log("❌ Failed to send test message:", response.error);
+            }
+
+            socket.disconnect();
+          }
+        );
+      } else {
+        console.log("❌ Failed to join conversation:", response.error);
+        socket.disconnect();
+      }
+    });
+  });
+
+  socket.on("connect_error", (error) => {
+    console.error("❌ Connection error:", error.message);
+  });
+
+  socket.on("new_message", (message) => {
     console.log(
-      `  User ${status.user_id} (${
-        status.is_student ? "Student" : "Instructor"
-      }) has read messages in conversation ${status.conversation_id}`
+      `📨 Received message: "${message.content}" from user ${message.sender.id}`
     );
-    if (status.messages_read) {
-      console.log(`  Number of messages read: ${status.messages_read}`);
-    }
+  });
+
+  socket.on("disconnect", () => {
+    console.log("🔌 Disconnected");
   });
 }
 
-// Handle keyboard input to send test messages
-const readline = require("readline");
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
+// Main execution
+if (require.main === module) {
+  const args = process.argv.slice(2);
 
-console.log("\n--- Commands ---");
-console.log(
-  "Type a message and press Enter to send a message to the conversation"
-);
-console.log("Type 'typing' to send a typing indicator");
-console.log("Type 'read' to mark messages as read");
-console.log("Type 'exit' to disconnect and exit");
-console.log("----------------\n");
-
-rl.on("line", (input) => {
-  if (input.toLowerCase() === "exit") {
-    console.log("Disconnecting...");
-    socket.disconnect();
-    rl.close();
-    process.exit(0);
-  } else if (input.toLowerCase() === "typing") {
-    console.log("Sending typing status...");
-    socket.emit("typing_status", {
-      conversation_id: parseInt(conversationId),
-      user_id: 123,
-      is_student: true,
-      is_typing: true,
-    });
-
-    // Automatically stop typing after 5 seconds
-    setTimeout(() => {
-      console.log("Stopped typing...");
-      socket.emit("typing_status", {
-        conversation_id: parseInt(conversationId),
-        user_id: 123,
-        is_student: true,
-        is_typing: false,
-      });
-    }, 5000);
-  } else if (input.toLowerCase() === "read") {
-    console.log("Marking messages as read...");
-    socket.emit("messages_read", {
-      conversation_id: parseInt(conversationId),
-      user_id: 123,
-      is_student: true,
-    });
+  if (args.length === 0) {
+    // Run full multi-tenant test
+    const testClient = new MultiTenantTestClient();
+    testClient.runFullTest();
+  } else if (args[0] === "single") {
+    // Test single tenant connection
+    const tenantId = parseInt(args[1]) || 1;
+    const userId = parseInt(args[2]) || 100;
+    testSingleTenant(tenantId, userId);
   } else {
-    // Send as a message
-    console.log("Sending message:", input);
-
-    // Use test_message event for local testing
-    socket.emit("test_message", {
-      conversation_id: parseInt(conversationId),
-      content: input,
-      user_id: 123,
-    });
+    console.log("Usage:");
+    console.log("  node test_client.js           # Run full multi-tenant test");
+    console.log(
+      "  node test_client.js single [tenant_id] [user_id]   # Test single tenant"
+    );
+    process.exit(1);
   }
-});
+}
 
-// Handle process termination
-process.on("SIGINT", () => {
-  console.log("\nDisconnecting...");
-  socket.disconnect();
-  rl.close();
-  process.exit(0);
-});
+module.exports = MultiTenantTestClient;

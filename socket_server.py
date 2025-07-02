@@ -78,6 +78,7 @@ socket_app = socketio.ASGIApp(sio, app)
 class MessageData(BaseModel):
     message_id: int = Field(..., description="ID of the message")
     conversation_id: int = Field(..., description="ID of the conversation")
+    tenant_id: int = Field(..., description="ID of the tenant")
     user_id: int = Field(..., description="ID of the user sending the message")
     is_student: bool = Field(..., description="Whether the user is a student (true) or instructor (false)")
     content: str = Field(..., description="Content of the message")
@@ -89,6 +90,7 @@ class MessageData(BaseModel):
             "example": {
                 "message_id": 1,
                 "conversation_id": 1,
+                "tenant_id": 1,
                 "user_id": 123,
                 "is_student": True,
                 "content": "Hello, how are you?",
@@ -99,6 +101,7 @@ class MessageData(BaseModel):
 
 class TypingData(BaseModel):
     conversation_id: int = Field(..., description="ID of the conversation")
+    tenant_id: int = Field(..., description="ID of the tenant")
     user_id: int = Field(..., description="ID of the user who is typing")
     is_student: bool = Field(..., description="Whether the user is a student (true) or instructor (false)")
     is_typing: bool = Field(True, description="Whether the user is typing (true) or stopped typing (false)")
@@ -107,6 +110,7 @@ class TypingData(BaseModel):
         schema_extra = {
             "example": {
                 "conversation_id": 1,
+                "tenant_id": 1,
                 "user_id": 123,
                 "is_student": True,
                 "is_typing": True
@@ -115,6 +119,7 @@ class TypingData(BaseModel):
 
 class ReadData(BaseModel):
     conversation_id: int = Field(..., description="ID of the conversation")
+    tenant_id: int = Field(..., description="ID of the tenant")
     user_id: int = Field(..., description="ID of the user who read the messages")
     is_student: bool = Field(..., description="Whether the user is a student (true) or instructor (false)")
     
@@ -122,6 +127,7 @@ class ReadData(BaseModel):
         schema_extra = {
             "example": {
                 "conversation_id": 1,
+                "tenant_id": 1,
                 "user_id": 123,
                 "is_student": True
             }
@@ -152,6 +158,7 @@ class SuccessResponse(BaseModel):
 class EmitEventData(BaseModel):
     event: str = Field(..., description="Name of the event to emit")
     data: Dict[str, Any] = Field(..., description="Data payload to send with the event")
+    tenant_id: int = Field(..., description="ID of the tenant")
     room: Optional[str] = Field(None, description="Room to emit the event to (optional)")
     
     class Config:
@@ -164,31 +171,45 @@ class EmitEventData(BaseModel):
                     "sender": {"id": 456, "name": "John Doe"},
                     "conversation_id": 789
                 },
+                "tenant_id": 1,
                 "room": "conversation_789"
             }
         }
 
 # Storage for connected clients (in-memory, no database)
+# Structure: {namespace: {sid: client_info}}
 connected_clients = {}
+
+# Helper function to get tenant namespace
+def get_tenant_namespace(tenant_id: int) -> str:
+    """Get the namespace for a specific tenant"""
+    return f"/tenant_{tenant_id}"
+
+# Helper function to get room name within tenant namespace
+def get_tenant_room(conversation_id: int) -> str:
+    """Get the room name for a conversation within a tenant namespace"""
+    return f"conversation_{conversation_id}"
 
 # Startup event
 @app.on_event("startup")
 async def startup_event():
     """Initialize server on startup."""
     logger.info("Message broker server starting up - no database required")
+    logger.info("Multi-tenant namespaces enabled")
     logger.info(f"API Key configured: {config.API_KEY[:4]}...")
 
 # REST API endpoints to receive messages from Laravel
 @app.post("/send-message", response_model=MessageResponse, tags=["Laravel Integration"], dependencies=[Depends(verify_api_key)])
 async def api_send_message(data: MessageData):
     """
-    Send a new message to a conversation.
+    Send a new message to a conversation within a tenant namespace.
     
     This endpoint receives a message from the Laravel backend and broadcasts it to all connected Socket.IO clients
-    in the specified conversation room. Use this when a user sends a new message through your Laravel app.
+    in the specified conversation room within the tenant's namespace. Use this when a user sends a new message through your Laravel app.
     
     Parameters:
     - **conversation_id**: ID of the conversation
+    - **tenant_id**: ID of the tenant (determines namespace)
     - **user_id**: ID of the user sending the message
     - **is_student**: Whether the sender is a student (true) or instructor (false)
     - **content**: Message content
@@ -196,137 +217,152 @@ async def api_send_message(data: MessageData):
     - **attachment_url**: URL to any media attachment (optional)
     
     Returns:
-    - **success**: Whether the message was successfully broadcast
-    - **message_id**: ID of the sent message
+    - **success**: Whether the message was successfully sent
+    - **message_id**: ID of the message that was sent
     """
+    # Create a standardized message format
     message = {
-        "id": data.message_id, 
+        "id": data.message_id,
         "content": data.content,
         "type": data.type,
         "attachment_url": data.attachment_url,
-        "sent_at": datetime.now().isoformat(),  # Use current timestamp
+        "sent_at": datetime.now().isoformat(),
         "sender": {
             "id": data.user_id,
             "is_student": data.is_student
         },
-        "conversation_id": data.conversation_id
+        "conversation_id": data.conversation_id,
+        "tenant_id": data.tenant_id
     }
-
-    logger.info(f"Message: {message}")
     
-    room_name = f"conversation_{data.conversation_id}"
-    logger.info(f"Broadcasting to room: {room_name}")
+    # Get tenant namespace and room
+    namespace = get_tenant_namespace(data.tenant_id)
+    room_name = get_tenant_room(data.conversation_id)
     
-    # Broadcast message to conversation room
-    await sio.emit("new_message", message, room=room_name)
-    logger.info(f"Message from Laravel broadcast to conversation {data.conversation_id}")
+    # Broadcast message to the conversation room within the tenant namespace
+    await sio.emit("new_message", message, room=room_name, namespace=namespace)
+    logger.info(f"Message {data.message_id} sent to conversation {data.conversation_id} in tenant {data.tenant_id} namespace")
     
     return {"success": True, "message_id": data.message_id}
 
 @app.post("/typing-status", response_model=SuccessResponse, tags=["Laravel Integration"], dependencies=[Depends(verify_api_key)])
 async def api_typing_status(data: TypingData):
     """
-    Update typing status for a user.
+    Update typing status for a user in a conversation within a tenant namespace.
     
     This endpoint receives typing status updates from the Laravel backend and broadcasts them to all connected
-    Socket.IO clients in the specified conversation room. Use this when a user starts or stops typing in your Laravel app.
+    Socket.IO clients in the specified conversation room within the tenant's namespace.
     
     Parameters:
     - **conversation_id**: ID of the conversation
+    - **tenant_id**: ID of the tenant (determines namespace)
     - **user_id**: ID of the user who is typing
     - **is_student**: Whether the user is a student (true) or instructor (false)
     - **is_typing**: Whether the user is typing (true) or stopped typing (false)
     
     Returns:
-    - **success**: Whether the typing status update was successfully broadcast
+    - **success**: Whether the typing status was successfully updated
     """
-    typing_data = {
+    typing_status = {
+        "user_id": data.user_id,
+        "is_student": data.is_student,
+        "is_typing": data.is_typing,
         "conversation_id": data.conversation_id,
-        "typing_users": [
-            {
-                "user_id": data.user_id,
-                "is_student": data.is_student
-            }
-        ]
+        "tenant_id": data.tenant_id
     }
     
-    # Broadcast typing status
-    await sio.emit("typing_status", typing_data, room=f"conversation_{data.conversation_id}")
-    logger.info(f"Typing status from Laravel broadcast for conversation {data.conversation_id}")
+    # Get tenant namespace and room
+    namespace = get_tenant_namespace(data.tenant_id)
+    room_name = get_tenant_room(data.conversation_id)
+    
+    # Broadcast typing status to the conversation room within the tenant namespace
+    await sio.emit("typing_status", typing_status, room=room_name, namespace=namespace)
+    logger.info(f"Typing status for user {data.user_id} in conversation {data.conversation_id} in tenant {data.tenant_id} namespace")
     
     return {"success": True}
 
 @app.post("/mark-read", response_model=SuccessResponse, tags=["Laravel Integration"], dependencies=[Depends(verify_api_key)])
 async def api_mark_read(data: ReadData):
     """
-    Mark messages as read.
+    Mark messages as read for a user in a conversation within a tenant namespace.
     
     This endpoint receives read status updates from the Laravel backend and broadcasts them to all connected
-    Socket.IO clients in the specified conversation room. Use this when a user reads messages in your Laravel app.
+    Socket.IO clients in the specified conversation room within the tenant's namespace.
     
     Parameters:
     - **conversation_id**: ID of the conversation
+    - **tenant_id**: ID of the tenant (determines namespace)
     - **user_id**: ID of the user who read the messages
     - **is_student**: Whether the user is a student (true) or instructor (false)
     
     Returns:
-    - **success**: Whether the read status update was successfully broadcast
+    - **success**: Whether the read status was successfully updated
     """
-    read_data = {
-        "conversation_id": data.conversation_id,
+    read_status = {
         "user_id": data.user_id,
-        "is_student": data.is_student
+        "is_student": data.is_student,
+        "conversation_id": data.conversation_id,
+        "tenant_id": data.tenant_id
     }
     
-    # Broadcast read status
-    await sio.emit("messages_read", read_data, room=f"conversation_{data.conversation_id}")
-    logger.info(f"Read status from Laravel broadcast for conversation {data.conversation_id}")
+    # Get tenant namespace and room
+    namespace = get_tenant_namespace(data.tenant_id)
+    room_name = get_tenant_room(data.conversation_id)
+    
+    # Broadcast read status to the conversation room within the tenant namespace
+    await sio.emit("messages_read", read_status, room=room_name, namespace=namespace)
+    logger.info(f"Messages read by user {data.user_id} in conversation {data.conversation_id} in tenant {data.tenant_id} namespace")
     
     return {"success": True}
 
 @app.post("/emit", response_model=SuccessResponse, tags=["Laravel Integration"], dependencies=[Depends(verify_api_key)])
 async def emit_event(data: EmitEventData):
     """
-    Emit an event to connected Socket.IO clients.
+    Emit a custom event to a tenant namespace.
     
-    This endpoint receives events from your Laravel backend and broadcasts them to the appropriate
-    Socket.IO clients. The event can be sent to all clients or to a specific room.
+    This is a generic endpoint that allows you to emit any custom event to a specific tenant namespace,
+    optionally to a specific room within that namespace.
     
     Parameters:
-    - **event**: Name of the event to emit (e.g., new_message)
-    - **data**: The data payload to send with the event
-    - **room**: (Optional) The room to emit the event to
+    - **event**: Name of the event to emit
+    - **data**: Data payload to send with the event
+    - **tenant_id**: ID of the tenant (determines namespace)
+    - **room**: Optional room to emit the event to (if not provided, emits to entire namespace)
     
     Returns:
-    - **success**: Whether the event was successfully broadcast
+    - **success**: Whether the event was successfully emitted
     """
+    namespace = get_tenant_namespace(data.tenant_id)
+    
     if data.room:
-        # Emit to specific room
-        await sio.emit(data.event, data.data, room=data.room)
-        logger.info(f"Event {data.event} emitted to room {data.room}")
+        # Emit to specific room within tenant namespace
+        await sio.emit(data.event, data.data, room=data.room, namespace=namespace)
+        logger.info(f"Event '{data.event}' emitted to room '{data.room}' in tenant {data.tenant_id} namespace")
     else:
-        # Emit to all clients
-        await sio.emit(data.event, data.data)
-        logger.info(f"Event {data.event} emitted to all clients")
+        # Emit to entire tenant namespace
+        await sio.emit(data.event, data.data, namespace=namespace)
+        logger.info(f"Event '{data.event}' emitted to entire tenant {data.tenant_id} namespace")
     
     return {"success": True}
 
 @app.post("/test-broadcast", response_model=SuccessResponse, tags=["Laravel Integration"], dependencies=[Depends(verify_api_key)])
 async def test_broadcast(data: dict):
     """
-    Test endpoint to broadcast a message to all connected clients.
+    Test broadcast endpoint for debugging tenant namespaces.
     
-    This endpoint is for testing purposes only. It broadcasts a test message to all connected clients
-    to verify that the Socket.IO server is working properly.
+    This endpoint sends a test message to a specific conversation within a tenant namespace.
+    Useful for testing the multi-tenant Socket.IO setup.
     
     Parameters:
-    - **conversation_id**: ID of the conversation to broadcast to
-    - **message**: Test message to broadcast
+    - **conversation_id**: ID of the conversation (optional, defaults to 1)
+    - **tenant_id**: ID of the tenant (optional, defaults to 1)
+    - **message**: Test message content (optional)
     
     Returns:
     - **success**: Whether the test message was successfully broadcast
     """
     conversation_id = data.get("conversation_id", 1)
+    tenant_id = data.get("tenant_id", 1)
     message = data.get("message", "Test message from server")
     
     test_message = {
@@ -339,133 +375,203 @@ async def test_broadcast(data: dict):
             "id": 0,
             "is_student": False
         },
-        "conversation_id": conversation_id
+        "conversation_id": conversation_id,
+        "tenant_id": tenant_id
     }
     
-    room_name = f"conversation_{conversation_id}"
+    # Get tenant namespace and room
+    namespace = get_tenant_namespace(tenant_id)
+    room_name = get_tenant_room(conversation_id)
     
-    # Broadcast to specific room
-    await sio.emit("new_message", test_message, room=room_name)
-    logger.info(f"Test message broadcast to room {room_name}")
+    # Broadcast to specific room within tenant namespace
+    await sio.emit("new_message", test_message, room=room_name, namespace=namespace)
+    logger.info(f"Test message broadcast to room {room_name} in tenant {tenant_id} namespace")
     
-    # Also broadcast to all clients for testing
-    await sio.emit("test_broadcast", {"message": message, "room": room_name})
-    logger.info(f"Test broadcast sent to all clients")
+    # Also broadcast to all clients in tenant namespace for testing
+    await sio.emit("test_broadcast", {"message": message, "room": room_name, "tenant_id": tenant_id}, namespace=namespace)
+    logger.info(f"Test broadcast sent to all clients in tenant {tenant_id} namespace")
     
     return {"success": True}
 
 
 @app.get("/connected-clients", tags=["System"], dependencies=[Depends(verify_api_key)])
 async def get_connected_clients():
-    """Get the status of the server."""
-        # Also log all connected clients for debugging
+    """Get the status of all connected clients across all tenant namespaces."""
+    all_clients = []
+    total_clients = 0
+    
+    for namespace, clients in connected_clients.items():
+        for sid, client_info in clients.items():
+            all_clients.append({
+                "sid": sid,
+                "namespace": namespace,
+                "user_id": client_info.get('user_id', 'unknown'),
+                "tenant_id": client_info.get('tenant_id', 0),
+                "user_type": client_info.get('user_type', 'unknown'),
+                "rooms": client_info.get('rooms', [])
+            })
+            total_clients += 1
 
-    connected_clients_list = []
-    for sid, client_info in connected_clients.items():
-        connected_clients_list.append({
-            "sid": sid,
-            "user_id": client_info.get('user_id', 'unknown'),
-            "user_type": client_info.get('user_type', 'unknown'),
-            "rooms": client_info.get('rooms', [])
-        })
+    logger.info(f"Total connected clients across all namespaces: {total_clients}")
+    return {
+        "total_connected_clients": total_clients,
+        "connected_clients": all_clients,
+        "namespaces": list(connected_clients.keys())
+    }
 
-    logger.info(f"Total connected clients: {len(connected_clients)}")
-    return {"connected_clients": connected_clients_list}
-
-# Socket.IO event handlers
-@sio.event
+# Dynamic namespace event handlers
+@sio.on('connect')
 async def connect(sid, environ, auth):
-    """Handle client connection."""
+    """Handle client connection to tenant namespace."""
+    # Get the namespace from the connection
+    namespace = environ.get('asgi.scope', {}).get('path', '/')
+    
     user_data = auth or {}
     user_id = user_data.get("id")
+    tenant_id = user_data.get("tenant_id", 0)
     user_type = "student" if user_data.get("isStudent", True) else "instructor"
     
-    connected_clients[sid] = {
+    # Initialize namespace storage if it doesn't exist
+    if namespace not in connected_clients:
+        connected_clients[namespace] = {}
+    
+    connected_clients[namespace][sid] = {
         "user_id": user_id,
         "user_type": user_type,
+        "tenant_id": tenant_id,
         "rooms": []
     }
     
-    logger.info(f"Client connected: {sid} (User ID: {user_id}, Type: {user_type})")
+    logger.info(f"Client connected: {sid} to namespace {namespace} (User ID: {user_id}, Tenant ID: {tenant_id}, Type: {user_type})")
     return True
 
-@sio.event
+@sio.on('disconnect')
 async def disconnect(sid):
-    """Handle client disconnection."""
-    if sid in connected_clients:
-        del connected_clients[sid]
-    logger.info(f"Client disconnected: {sid}")
+    """Handle client disconnection from any namespace."""
+    # Find and remove client from appropriate namespace
+    for namespace in connected_clients:
+        if sid in connected_clients[namespace]:
+            del connected_clients[namespace][sid]
+            logger.info(f"Client disconnected: {sid} from namespace {namespace}")
+            break
 
-@sio.event
+@sio.on('join_conversation')
 async def join_conversation(sid, data):
-    """Join a conversation room."""
-    conversation_id = data.get("conversation_id")
+    """Join a conversation room within the client's tenant namespace."""
+    # Get the namespace from the connection
+    namespace = None
+    for ns, clients in connected_clients.items():
+        if sid in clients:
+            namespace = ns
+            break
     
+    if not namespace:
+        return {"error": "Client not found in any namespace"}
+    
+    conversation_id = data.get("conversation_id")
     if not conversation_id:
         return {"error": "Missing conversation_id"}
     
-    room_name = f"conversation_{conversation_id}"
-    sio.enter_room(sid, room_name)
+    room_name = get_tenant_room(conversation_id)
+    await sio.enter_room(sid, room_name, namespace=namespace)
     
     # Update client's room list
-    if sid in connected_clients:
-        if room_name not in connected_clients[sid]["rooms"]:
-            connected_clients[sid]["rooms"].append(room_name)
+    if sid in connected_clients[namespace]:
+        if room_name not in connected_clients[namespace][sid]["rooms"]:
+            connected_clients[namespace][sid]["rooms"].append(room_name)
     
-    logger.info(f"Client {sid} joined room {room_name}")
-    logger.info(f"Client {sid} is now in rooms: {connected_clients.get(sid, {}).get('rooms', [])}")
+    logger.info(f"Client {sid} joined room {room_name} in namespace {namespace}")
     
-    return {"success": True, "conversation_id": conversation_id}
+    return {"success": True, "conversation_id": conversation_id, "namespace": namespace}
 
-@sio.event
+@sio.on('leave_room')
 async def leave_room(sid, data):
-    """Leave a conversation room."""
-    conversation_id = data.get("conversation_id")
+    """Leave a conversation room within the client's tenant namespace."""
+    # Get the namespace from the connection
+    namespace = None
+    for ns, clients in connected_clients.items():
+        if sid in clients:
+            namespace = ns
+            break
     
+    if not namespace:
+        return {"error": "Client not found in any namespace"}
+    
+    conversation_id = data.get("conversation_id")
     if not conversation_id:
         return {"error": "Missing conversation_id"}
     
-    room_name = f"conversation_{conversation_id}"
-    sio.leave_room(sid, room_name)
+    room_name = get_tenant_room(conversation_id)
+    await sio.leave_room(sid, room_name, namespace=namespace)
     
     # Update client's room list
-    if sid in connected_clients and room_name in connected_clients[sid]["rooms"]:
-        connected_clients[sid]["rooms"].remove(room_name)
+    if sid in connected_clients[namespace] and room_name in connected_clients[namespace][sid]["rooms"]:
+        connected_clients[namespace][sid]["rooms"].remove(room_name)
     
-    logger.info(f"Client {sid} left room {room_name}")
+    logger.info(f"Client {sid} left room {room_name} in namespace {namespace}")
     
-    return {"success": True, "conversation_id": conversation_id}
+    return {"success": True, "conversation_id": conversation_id, "namespace": namespace}
 
 @sio.on("typing_status")
 async def on_typing_status(sid, data):
-    """Handle typing status updates from clients."""
-    # Don't need to store this, just relay to the room
+    """Handle typing status updates from clients within their tenant namespace."""
+    # Get the namespace from the connection
+    namespace = None
+    for ns, clients in connected_clients.items():
+        if sid in clients:
+            namespace = ns
+            break
+    
+    if not namespace:
+        return {"error": "Client not found in any namespace"}
+    
     conversation_id = data.get("conversation_id")
     if not conversation_id:
         return {"error": "Missing conversation_id"}
     
-    room = f"conversation_{conversation_id}"
-    # Relay to everyone in the room except sender
-    await sio.emit("typing_status", data, room=room, skip_sid=sid)
+    room = get_tenant_room(conversation_id)
+    # Relay to everyone in the room except sender within the same namespace
+    await sio.emit("typing_status", data, room=room, skip_sid=sid, namespace=namespace)
     return {"success": True}
 
 @sio.on("messages_read")
 async def on_messages_read(sid, data):
-    """Handle messages read updates from clients."""
+    """Handle messages read updates from clients within their tenant namespace."""
+    # Get the namespace from the connection
+    namespace = None
+    for ns, clients in connected_clients.items():
+        if sid in clients:
+            namespace = ns
+            break
+    
+    if not namespace:
+        return {"error": "Client not found in any namespace"}
+    
     conversation_id = data.get("conversation_id")
     if not conversation_id:
         return {"error": "Missing conversation_id"}
     
-    room = f"conversation_{conversation_id}"
-    # Relay to everyone in the room except sender
-    await sio.emit("messages_read", data, room=room, skip_sid=sid)
+    room = get_tenant_room(conversation_id)
+    # Relay to everyone in the room except sender within the same namespace
+    await sio.emit("messages_read", data, room=room, skip_sid=sid, namespace=namespace)
     return {"success": True}
 
-@sio.event
+@sio.on("test_message")
 async def test_message(sid, data):
-    """Test message event for client testing."""
-    conversation_id = data.get("conversation_id")
+    """Test message event for client testing within tenant namespace."""
+    # Get the namespace from the connection
+    namespace = None
+    tenant_id = None
+    for ns, clients in connected_clients.items():
+        if sid in clients:
+            namespace = ns
+            tenant_id = connected_clients[ns][sid].get('tenant_id', 0)
+            break
     
+    if not namespace:
+        return {"error": "Client not found in any namespace"}
+    
+    conversation_id = data.get("conversation_id")
     if not conversation_id:
         return {"error": "Missing conversation_id"}
     
@@ -480,15 +586,16 @@ async def test_message(sid, data):
             "id": data.get("user_id", 0),
             "is_student": data.get("is_student", True)
         },
-        "conversation_id": conversation_id
+        "conversation_id": conversation_id,
+        "tenant_id": tenant_id
     }
     
-    room = f"conversation_{conversation_id}"
-    # Broadcast message to the conversation room
-    await sio.emit("new_message", message, room=room)
-    logger.info(f"Test message sent to conversation {conversation_id}")
+    room = get_tenant_room(conversation_id)
+    # Broadcast message to the conversation room within the tenant namespace
+    await sio.emit("new_message", message, room=room, namespace=namespace)
+    logger.info(f"Test message sent to conversation {conversation_id} in namespace {namespace}")
     
-    return {"success": True, "message": message}
+    return {"success": True, "message": message, "namespace": namespace}
 
 # FastAPI routes
 @app.get("/", tags=["System"], dependencies=[Depends(verify_api_key)])
@@ -496,19 +603,31 @@ async def root():
     """
     Health check endpoint.
     
-    Returns the current status of the chat server.
+    Returns the current status of the chat server with multi-tenant namespace information.
     """
-    # Count connected users by type
-    user_counts = {"student": 0, "instructor": 0}
-    for client in connected_clients.values():
-        user_type = client.get("user_type", "student")
-        user_counts[user_type] += 1
+    # Count connected users by type and namespace
+    namespace_stats = {}
+    total_users = 0
+    
+    for namespace, clients in connected_clients.items():
+        user_counts = {"student": 0, "instructor": 0}
+        for client in clients.values():
+            user_type = client.get("user_type", "student")
+            user_counts[user_type] += 1
+            total_users += 1
+        
+        namespace_stats[namespace] = {
+            "total_users": sum(user_counts.values()),
+            "users_by_type": user_counts
+        }
         
     return {
         "status": "online", 
         "service": "socket.io-chat-server",
-        "connected_users": sum(user_counts.values()),
-        "connected_by_type": user_counts,
+        "multi_tenant": True,
+        "total_connected_users": total_users,
+        "namespace_stats": namespace_stats,
+        "active_namespaces": list(connected_clients.keys()),
         "server_time": datetime.now().isoformat()
     }
 
