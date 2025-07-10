@@ -91,6 +91,13 @@
       function testSocketIO() {
         addResult("Testing Socket.IO connection...", "info");
 
+        // Get API key from user input
+        const apiKey = prompt("Enter your API key:");
+        if (!apiKey) {
+          addResult("❌ API key is required for testing", "error");
+          return;
+        }
+
         const socket = io("https://tuneup.sageteck.com/broadcast", {
           auth: {
             id: 1,
@@ -98,9 +105,10 @@
             isStudent: true,
           },
           extraHeaders: {
-            "X-Tuneup-API-Key": "test-key",
+            "X-Tuneup-API-Key": apiKey,
           },
           timeout: 5000,
+          path: "/socket.io/",
         });
 
         socket.on("connect", () => {

@@ -131,7 +131,7 @@ def validate_socketio_origin(origin):
 # Initialize Socket.IO server
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins=validate_socketio_origin,
+    cors_allowed_origins="*",  # Allow all origins - CORS is handled by TenantCORSMiddleware
     cors_credentials=True,
     logger=True,
     engineio_logger=True,

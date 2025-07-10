@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Socket.IO Debug Test</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f5f5f5;
+      }
+      .container {
+        background-color: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      .test-result {
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 5px;
+        border-left: 4px solid #ddd;
+      }
+      .success {
+        background-color: #d4edda;
+        color: #155724;
+        border-left-color: #28a745;
+      }
+      .error {
+        background-color: #f8d7da;
+        color: #721c24;
+        border-left-color: #dc3545;
+      }
+      .info {
+        background-color: #d1ecf1;
+        color: #0c5460;
+        border-left-color: #17a2b8;
+      }
+      .warning {
+        background-color: #fff3cd;
+        color: #856404;
+        border-left-color: #ffc107;
+      }
+      .form-group {
+        margin-bottom: 15px;
+      }
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+      }
+      input,
+      select {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+      button {
+        background-color: #007bff;
+        color: white;
+        padding: 10px 20px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-right: 10px;
+        margin-bottom: 10px;
+      }
+      button:hover {
+        background-color: #0056b3;
+      }
+      button:disabled {
+        background-color: #6c757d;
+        cursor: not-allowed;
+      }
+      .diagnostic-info {
+        background-color: #e9ecef;
+        padding: 15px;
+        border-radius: 4px;
+        margin: 15px 0;
+      }
+      .diagnostic-info pre {
+        margin: 0;
+        font-size: 12px;
+        overflow-x: auto;
+      }
+      .step-indicator {
+        background-color: #6c757d;
+        color: white;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        margin-right: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Socket.IO Connection Debug Tool</h1>
+      <p>This tool helps diagnose Socket.IO connection issues step by step.</p>
+
+      <div class="form-group">
+        <label for="server-url">Server URL:</label>
+        <input
+          type="text"
+          id="server-url"
+          value="https://tuneup.sageteck.com/broadcast"
+          placeholder="Enter server URL"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="api-key">API Key:</label>
+        <input type="password" id="api-key" placeholder="Enter your API key" />
+      </div>
+
+      <div class="form-group">
+        <label for="tenant-id">Tenant ID:</label>
+        <input type="number" id="tenant-id" value="2" min="1" />
+      </div>
+
+      <div class="form-group">
+        <label for="user-id">User ID:</label>
+        <input type="number" id="user-id" value="1" min="1" />
+      </div>
+
+      <div class="form-group">
+        <label for="user-type">User Type:</label>
+        <select id="user-type">
+          <option value="student">Student</option>
+          <option value="instructor">Instructor</option>
+        </select>
+      </div>
+
+      <div style="margin: 20px 0">
+        <button onclick="runFullDiagnostic()">Run Full Diagnostic</button>
+        <button onclick="testBasicConnectivity()">
+          Test Basic Connectivity
+        </button>
+        <button onclick="testSocketIOConnection()">
+          Test Socket.IO Connection
+        </button>
+        <button onclick="clearResults()">Clear Results</button>
+      </div>
+
+      <div id="results"></div>
+
+      <div class="diagnostic-info">
+        <h3>Current Environment:</h3>
+        <pre id="environment-info"></pre>
+      </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+      // Initialize environment info
+      document.getElementById("environment-info").textContent = JSON.stringify(
+        {
+          origin: window.location.origin,
+          userAgent: navigator.userAgent,
+          socketIOVersion: "4.7.2",
+          timestamp: new Date().toISOString(),
+        },
+        null,
+        2
+      );
+
+      function addResult(step, message, type = "info") {
+        const div = document.createElement("div");
+        div.className = `test-result ${type}`;
+        div.innerHTML = `<span class="step-indicator">${step}</span><strong>${new Date().toLocaleTimeString()}:</strong> ${message}`;
+        document.getElementById("results").appendChild(div);
+
+        // Auto-scroll to bottom
+        div.scrollIntoView({ behavior: "smooth" });
+      }
+
+      function clearResults() {
+        document.getElementById("results").innerHTML = "";
+      }
+
+      function getFormData() {
+        return {
+          serverUrl: document.getElementById("server-url").value.trim(),
+          apiKey: document.getElementById("api-key").value.trim(),
+          tenantId: parseInt(document.getElementById("tenant-id").value),
+          userId: parseInt(document.getElementById("user-id").value),
+          userType: document.getElementById("user-type").value,
+        };
+      }
+
+      async function testBasicConnectivity() {
+        const data = getFormData();
+
+        if (!data.serverUrl) {
+          addResult("1", "❌ Server URL is required", "error");
+          return;
+        }
+
+        addResult("1", "🌐 Testing basic HTTP connectivity...", "info");
+
+        try {
+          const response = await fetch(data.serverUrl + "/", {
+            method: "GET",
+            headers: {
+              "X-Tuneup-API-Key": data.apiKey || "test-key",
+            },
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            addResult(
+              "1",
+              `✅ HTTP connectivity successful: ${result.status}`,
+              "success"
+            );
+          } else {
+            addResult(
+              "1",
+              `❌ HTTP request failed: ${response.status} ${response.statusText}`,
+              "error"
+            );
+          }
+        } catch (error) {
+          addResult("1", `❌ Network error: ${error.message}`, "error");
+        }
+      }
+
+      async function testDiagnosticEndpoint() {
+        const data = getFormData();
+
+        if (!data.apiKey) {
+          addResult(
+            "2",
+            "⚠️ API key not provided, skipping diagnostic endpoint",
+            "warning"
+          );
+          return;
+        }
+
+        addResult("2", "🔍 Testing diagnostic endpoint...", "info");
+
+        try {
+          const response = await fetch(data.serverUrl + "/diagnostic", {
+            method: "GET",
+            headers: {
+              "X-Tuneup-API-Key": data.apiKey,
+            },
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            addResult("2", `✅ Diagnostic endpoint successful`, "success");
+            addResult(
+              "2",
+              `📊 Server config: ${JSON.stringify(result.socket_io_config)}`,
+              "info"
+            );
+            addResult(
+              "2",
+              `🔑 API key status: ${
+                result.api_key_configured ? "Configured" : "Not configured"
+              }`,
+              result.api_key_configured ? "success" : "error"
+            );
+          } else {
+            addResult(
+              "2",
+              `❌ Diagnostic endpoint failed: ${response.status} ${response.statusText}`,
+              "error"
+            );
+          }
+        } catch (error) {
+          addResult(
+            "2",
+            `❌ Diagnostic endpoint error: ${error.message}`,
+            "error"
+          );
+        }
+      }
+
+      function testSocketIOConnection() {
+        const data = getFormData();
+
+        if (!data.serverUrl || !data.apiKey) {
+          addResult("3", "❌ Server URL and API key are required", "error");
+          return;
+        }
+
+        addResult("3", "🔌 Testing Socket.IO connection...", "info");
+        addResult("3", `📡 Connecting to: ${data.serverUrl}`, "info");
+        addResult(
+          "3",
+          `🔑 Using API key: ${data.apiKey.substring(0, 4)}...`,
+          "info"
+        );
+
+        const socket = io(data.serverUrl, {
+          auth: {
+            id: data.userId,
+            tenant_id: data.tenantId,
+            isStudent: data.userType === "student",
+          },
+          extraHeaders: {
+            "X-Tuneup-API-Key": data.apiKey,
+          },
+          timeout: 10000,
+          path: "/socket.io/",
+          transports: ["websocket", "polling"],
+        });
+
+        // Connection successful
+        socket.on("connect", () => {
+          addResult(
+            "3",
+            `✅ Socket.IO connection successful! Socket ID: ${socket.id}`,
+            "success"
+          );
+
+          // Test joining a conversation
+          socket.emit(
+            "join_conversation",
+            { conversation_id: 1 },
+            (response) => {
+              if (response && response.success) {
+                addResult(
+                  "3",
+                  `✅ Successfully joined conversation: ${response.room}`,
+                  "success"
+                );
+              } else {
+                addResult(
+                  "3",
+                  `❌ Failed to join conversation: ${
+                    response?.error || "Unknown error"
+                  }`,
+                  "error"
+                );
+              }
+
+              // Disconnect after testing
+              setTimeout(() => {
+                socket.disconnect();
+                addResult("3", "🔌 Disconnected from server", "info");
+              }, 2000);
+            }
+          );
+        });
+
+        // Connection failed
+        socket.on("connect_error", (error) => {
+          addResult(
+            "3",
+            `❌ Socket.IO connection failed: ${error.message}`,
+            "error"
+          );
+          addResult(
+            "3",
+            `🔍 Error details: ${error.description || "No additional details"}`,
+            "info"
+          );
+          addResult("3", `🛠️ Error type: ${error.type || "Unknown"}`, "info");
+        });
+
+        // Disconnection
+        socket.on("disconnect", (reason) => {
+          addResult("3", `🔌 Socket.IO disconnected: ${reason}`, "info");
+        });
+
+        // Timeout handler
+        setTimeout(() => {
+          if (!socket.connected) {
+            addResult("3", "⏰ Connection attempt timed out", "error");
+            socket.disconnect();
+          }
+        }, 10000);
+      }
+
+      async function runFullDiagnostic() {
+        clearResults();
+        addResult("START", "🚀 Starting comprehensive diagnostic...", "info");
+
+        // Test 1: Basic connectivity
+        await testBasicConnectivity();
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Test 2: Diagnostic endpoint
+        await testDiagnosticEndpoint();
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Test 3: Socket.IO connection
+        testSocketIOConnection();
+      }
+
+      // Auto-focus on API key field
+      document.getElementById("api-key").focus();
+    </script>
+  </body>
+</html>
