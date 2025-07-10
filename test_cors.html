@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CORS Test</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .test-result {
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 5px;
+      }
+      .success {
+        background-color: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+      .error {
+        background-color: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+      .info {
+        background-color: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>CORS Configuration Test</h1>
+    <p>This page tests if CORS is properly configured for tenant subdomains.</p>
+
+    <div id="current-origin" class="test-result info">
+      <strong>Current Origin:</strong> <span id="origin-display"></span>
+    </div>
+
+    <button onclick="testCORS()">Test CORS Connection</button>
+    <button onclick="testSocketIO()">Test Socket.IO Connection</button>
+
+    <div id="results"></div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+      // Display current origin
+      document.getElementById("origin-display").textContent =
+        window.location.origin;
+
+      function addResult(message, type = "info") {
+        const div = document.createElement("div");
+        div.className = `test-result ${type}`;
+        div.innerHTML = `<strong>${new Date().toLocaleTimeString()}:</strong> ${message}`;
+        document.getElementById("results").appendChild(div);
+      }
+
+      async function testCORS() {
+        addResult("Testing CORS with fetch request...", "info");
+
+        try {
+          const response = await fetch(
+            "https://tuneup.sageteck.com/broadcast/",
+            {
+              method: "OPTIONS",
+              headers: {
+                Origin: window.location.origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "X-Tuneup-API-Key",
+              },
+            }
+          );
+
+          if (response.ok) {
+            addResult("✅ CORS preflight request successful", "success");
+          } else {
+            addResult(
+              `❌ CORS preflight failed: ${response.status} ${response.statusText}`,
+              "error"
+            );
+          }
+        } catch (error) {
+          addResult(`❌ CORS test failed: ${error.message}`, "error");
+        }
+      }
+
+      function testSocketIO() {
+        addResult("Testing Socket.IO connection...", "info");
+
+        const socket = io("https://tuneup.sageteck.com/broadcast", {
+          auth: {
+            id: 1,
+            tenant_id: 2,
+            isStudent: true,
+          },
+          extraHeaders: {
+            "X-Tuneup-API-Key": "test-key",
+          },
+          timeout: 5000,
+        });
+
+        socket.on("connect", () => {
+          addResult("✅ Socket.IO connection successful", "success");
+          socket.disconnect();
+        });
+
+        socket.on("connect_error", (error) => {
+          addResult(
+            `❌ Socket.IO connection failed: ${error.message}`,
+            "error"
+          );
+        });
+
+        socket.on("disconnect", () => {
+          addResult("Socket.IO disconnected", "info");
+        });
+
+        // Auto-disconnect after 10 seconds if no response
+        setTimeout(() => {
+          if (socket.connected) {
+            socket.disconnect();
+          } else {
+            addResult("⏰ Socket.IO connection timeout", "error");
+          }
+        }, 10000);
+      }
+    </script>
+  </body>
+</html>

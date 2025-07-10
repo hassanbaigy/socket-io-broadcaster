@@ -17,9 +17,14 @@ if not API_KEY:
 
 # CORS settings
 CORS_ORIGINS: List[str] = [
+    # Local development
     "http://hassantest.tuneup.localhost:8000",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     "http://localhost:3000",
+    # Production domains
+    "https://tuneup.sageteck.com",
+    # All tenant subdomains pattern
+    "https://*.tuneup.sageteck.com",
     "*"  # Allow all origins in development
 ] 

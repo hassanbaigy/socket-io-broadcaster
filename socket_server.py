@@ -3,11 +3,14 @@ import socketio
 import uvicorn
 from fastapi import FastAPI, Request, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import Response
 import config
 import logging
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+import re
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)                 
@@ -23,14 +26,53 @@ app = FastAPI(
     root_path="/broadcast"
 )
 
-# Setup CORS - Disabled for development/testing
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=config.CORS_ORIGINS,
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
+# Custom CORS middleware to handle tenant subdomains
+class TenantCORSMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("origin")
+        
+        # Check if origin is allowed
+        is_allowed = False
+        if origin:
+            # Check explicit origins
+            if origin in config.CORS_ORIGINS:
+                is_allowed = True
+                logger.info(f"CORS: Origin {origin} allowed (explicit)")
+            # Check tenant subdomain pattern
+            elif re.match(r'^https://[a-zA-Z0-9-]+\.tuneup\.sageteck\.com$', origin):
+                is_allowed = True
+                logger.info(f"CORS: Origin {origin} allowed (tenant subdomain)")
+            # Allow localhost for development
+            elif origin.startswith(('http://localhost', 'http://127.0.0.1')):
+                is_allowed = True
+                logger.info(f"CORS: Origin {origin} allowed (localhost)")
+            else:
+                logger.warning(f"CORS: Origin {origin} not allowed")
+        
+        # Handle preflight requests
+        if request.method == "OPTIONS":
+            if is_allowed:
+                response = Response()
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Methods"] = "*"
+                response.headers["Access-Control-Allow-Headers"] = "*"
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+                return response
+            else:
+                return Response(status_code=403)
+        
+        # Process the request
+        response = await call_next(request)
+        
+        # Add CORS headers to response
+        if is_allowed:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        
+        return response
+
+# Add custom CORS middleware
+app.add_middleware(TenantCORSMiddleware)
 
 # Security dependency for API key validation
 async def verify_api_key(x_tuneup_api_key: str = Header(...)):
@@ -61,11 +103,36 @@ async def authenticate_socket(environ):
         return False
     return True
 
+# Function to validate Socket.IO origins
+def validate_socketio_origin(origin):
+    """Validate if an origin is allowed for Socket.IO connections"""
+    if not origin:
+        logger.warning("Socket.IO: No origin provided")
+        return False
+    
+    # Check explicit origins
+    if origin in config.CORS_ORIGINS:
+        logger.info(f"Socket.IO: Origin {origin} allowed (explicit)")
+        return True
+    
+    # Check tenant subdomain pattern
+    if re.match(r'^https://[a-zA-Z0-9-]+\.tuneup\.sageteck\.com$', origin):
+        logger.info(f"Socket.IO: Origin {origin} allowed (tenant subdomain)")
+        return True
+    
+    # Allow localhost for development
+    if origin.startswith(('http://localhost', 'http://127.0.0.1')):
+        logger.info(f"Socket.IO: Origin {origin} allowed (localhost)")
+        return True
+    
+    logger.warning(f"Socket.IO: Origin {origin} not allowed")
+    return False
+
 # Initialize Socket.IO server
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins="*",
-    cors_credentials=False,
+    cors_allowed_origins=validate_socketio_origin,
+    cors_credentials=True,
     logger=True,
     engineio_logger=True,
     auth=authenticate_socket,
@@ -180,15 +247,15 @@ class EmitEventData(BaseModel):
 # Structure: {namespace: {sid: client_info}}
 connected_clients = {}
 
-# Helper function to get tenant namespace
-def get_tenant_namespace(tenant_id: int) -> str:
-    """Get the namespace for a specific tenant"""
-    return f"/tenant_{tenant_id}"
+# Helper function to get tenant room name
+def get_tenant_room(tenant_id: int) -> str:
+    """Get the room name for a specific tenant"""
+    return f"tenant_{tenant_id}"
 
-# Helper function to get room name within tenant namespace
-def get_tenant_room(conversation_id: int) -> str:
-    """Get the room name for a conversation within a tenant namespace"""
-    return f"conversation_{conversation_id}"
+# Helper function to get conversation room name
+def get_conversation_room(tenant_id: int, conversation_id: int) -> str:
+    """Get the room name for a conversation within a tenant scope"""
+    return f"tenant_{tenant_id}_conversation_{conversation_id}"
 
 # Startup event
 @app.on_event("startup")
@@ -235,13 +302,12 @@ async def api_send_message(data: MessageData):
         "tenant_id": data.tenant_id
     }
     
-    # Get tenant namespace and room
-    namespace = get_tenant_namespace(data.tenant_id)
-    room_name = get_tenant_room(data.conversation_id)
+    # Get the conversation room
+    room = get_conversation_room(data.tenant_id, data.conversation_id)
     
-    # Broadcast message to the conversation room within the tenant namespace
-    await sio.emit("new_message", message, room=room_name, namespace=namespace)
-    logger.info(f"Message {data.message_id} sent to conversation {data.conversation_id} in tenant {data.tenant_id} namespace")
+    # Broadcast message to the conversation room
+    await sio.emit("new_message", message, room=room)
+    logger.info(f"Message {data.message_id} sent to conversation {data.conversation_id} in tenant {data.tenant_id}")
     
     return {"success": True, "message_id": data.message_id}
 
@@ -271,13 +337,12 @@ async def api_typing_status(data: TypingData):
         "tenant_id": data.tenant_id
     }
     
-    # Get tenant namespace and room
-    namespace = get_tenant_namespace(data.tenant_id)
-    room_name = get_tenant_room(data.conversation_id)
+    # Get the conversation room
+    room = get_conversation_room(data.tenant_id, data.conversation_id)
     
-    # Broadcast typing status to the conversation room within the tenant namespace
-    await sio.emit("typing_status", typing_status, room=room_name, namespace=namespace)
-    logger.info(f"Typing status for user {data.user_id} in conversation {data.conversation_id} in tenant {data.tenant_id} namespace")
+    # Broadcast typing status to the conversation room
+    await sio.emit("typing_status", typing_status, room=room)
+    logger.info(f"Typing status for user {data.user_id} in conversation {data.conversation_id} in tenant {data.tenant_id}")
     
     return {"success": True}
 
@@ -305,13 +370,12 @@ async def api_mark_read(data: ReadData):
         "tenant_id": data.tenant_id
     }
     
-    # Get tenant namespace and room
-    namespace = get_tenant_namespace(data.tenant_id)
-    room_name = get_tenant_room(data.conversation_id)
+    # Get the conversation room
+    room = get_conversation_room(data.tenant_id, data.conversation_id)
     
-    # Broadcast read status to the conversation room within the tenant namespace
-    await sio.emit("messages_read", read_status, room=room_name, namespace=namespace)
-    logger.info(f"Messages read by user {data.user_id} in conversation {data.conversation_id} in tenant {data.tenant_id} namespace")
+    # Broadcast read status to the conversation room
+    await sio.emit("messages_read", read_status, room=room)
+    logger.info(f"Messages read by user {data.user_id} in conversation {data.conversation_id} in tenant {data.tenant_id}")
     
     return {"success": True}
 
@@ -332,16 +396,17 @@ async def emit_event(data: EmitEventData):
     Returns:
     - **success**: Whether the event was successfully emitted
     """
-    namespace = get_tenant_namespace(data.tenant_id)
+    # Get the tenant room for broadcasting to all tenant's clients
+    tenant_room = get_tenant_room(data.tenant_id)
     
     if data.room:
-        # Emit to specific room within tenant namespace
-        await sio.emit(data.event, data.data, room=data.room, namespace=namespace)
-        logger.info(f"Event '{data.event}' emitted to room '{data.room}' in tenant {data.tenant_id} namespace")
+        # Emit to specific room (e.g., a conversation room)
+        await sio.emit(data.event, data.data, room=data.room)
+        logger.info(f"Event '{data.event}' emitted to room '{data.room}' in tenant {data.tenant_id}")
     else:
-        # Emit to entire tenant namespace
-        await sio.emit(data.event, data.data, namespace=namespace)
-        logger.info(f"Event '{data.event}' emitted to entire tenant {data.tenant_id} namespace")
+        # Emit to all tenant's clients via tenant room
+        await sio.emit(data.event, data.data, room=tenant_room)
+        logger.info(f"Event '{data.event}' emitted to all clients in tenant {data.tenant_id}")
     
     return {"success": True}
 
@@ -379,17 +444,21 @@ async def test_broadcast(data: dict):
         "tenant_id": tenant_id
     }
     
-    # Get tenant namespace and room
-    namespace = get_tenant_namespace(tenant_id)
-    room_name = get_tenant_room(conversation_id)
+    # Get tenant and conversation rooms
+    tenant_room = get_tenant_room(tenant_id)
+    conversation_room = get_conversation_room(tenant_id, conversation_id)
     
-    # Broadcast to specific room within tenant namespace
-    await sio.emit("new_message", test_message, room=room_name, namespace=namespace)
-    logger.info(f"Test message broadcast to room {room_name} in tenant {tenant_id} namespace")
+    # Broadcast to specific conversation room
+    await sio.emit("new_message", test_message, room=conversation_room)
+    logger.info(f"Test message broadcast to conversation {conversation_id} in tenant {tenant_id}")
     
-    # Also broadcast to all clients in tenant namespace for testing
-    await sio.emit("test_broadcast", {"message": message, "room": room_name, "tenant_id": tenant_id}, namespace=namespace)
-    logger.info(f"Test broadcast sent to all clients in tenant {tenant_id} namespace")
+    # Also broadcast to all tenant's clients for testing
+    await sio.emit("test_broadcast", {
+        "message": message,
+        "conversation_room": conversation_room,
+        "tenant_id": tenant_id
+    }, room=tenant_room)
+    logger.info(f"Test broadcast sent to all clients in tenant {tenant_id}")
     
     return {"success": True}
 
@@ -422,180 +491,232 @@ async def get_connected_clients():
 # Dynamic namespace event handlers
 @sio.on('connect')
 async def connect(sid, environ, auth):
-    """Handle client connection to tenant namespace."""
-    # Get the namespace from the connection
-    namespace = environ.get('asgi.scope', {}).get('path', '/')
-    
-    user_data = auth or {}
-    user_id = user_data.get("id")
-    tenant_id = user_data.get("tenant_id", 0)
-    user_type = "student" if user_data.get("isStudent", True) else "instructor"
-    
-    # Initialize namespace storage if it doesn't exist
-    if namespace not in connected_clients:
-        connected_clients[namespace] = {}
-    
-    connected_clients[namespace][sid] = {
-        "user_id": user_id,
-        "user_type": user_type,
-        "tenant_id": tenant_id,
-        "rooms": []
-    }
-    
-    logger.info(f"Client connected: {sid} to namespace {namespace} (User ID: {user_id}, Tenant ID: {tenant_id}, Type: {user_type})")
-    return True
+    """Handle client connection and tenant room isolation."""
+    try:
+        # Extract user data from auth
+        user_data = auth or {}
+        user_id = user_data.get("id")
+        tenant_id = user_data.get("tenant_id", 0)
+        user_type = "student" if user_data.get("isStudent", True) else "instructor"
+        
+        # Validate required fields
+        if not user_id:
+            logger.warning(f"Connection rejected for {sid}: Missing user_id in auth data")
+            return False
+            
+        if not tenant_id or tenant_id <= 0:
+            logger.warning(f"Connection rejected for {sid}: Invalid tenant_id ({tenant_id}) in auth data")
+            return False
+        
+        # Initialize storage for root namespace if needed
+        if "/" not in connected_clients:
+            connected_clients["/"] = {}
+        
+        # Store client connection info
+        connected_clients["/"][sid] = {
+            "user_id": user_id,
+            "user_type": user_type,
+            "tenant_id": tenant_id,
+            "rooms": []
+        }
+        
+        # Automatically join the tenant room for isolation
+        tenant_room = get_tenant_room(tenant_id)
+        sio.enter_room(sid, tenant_room)
+        connected_clients["/"][sid]["rooms"].append(tenant_room)
+        
+        logger.info(f"Client connected: {sid} (User ID: {user_id}, Tenant ID: {tenant_id}, Type: {user_type})")
+        logger.info(f"Client {sid} joined tenant room: {tenant_room}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error handling connection for {sid}: {str(e)}")
+        logger.error(f"Auth data received: {auth}")
+        return False
 
 @sio.on('disconnect')
 async def disconnect(sid):
-    """Handle client disconnection from any namespace."""
-    # Find and remove client from appropriate namespace
-    for namespace in connected_clients:
-        if sid in connected_clients[namespace]:
-            del connected_clients[namespace][sid]
-            logger.info(f"Client disconnected: {sid} from namespace {namespace}")
-            break
+    """Handle client disconnection."""
+    try:
+        if sid in connected_clients.get("/", {}):
+            client_info = connected_clients["/"][sid]
+            tenant_id = client_info["tenant_id"]
+            del connected_clients["/"][sid]
+            logger.info(f"Client disconnected: {sid} (Tenant ID: {tenant_id})")
+    except Exception as e:
+        logger.error(f"Error handling disconnect for {sid}: {str(e)}")
 
 @sio.on('join_conversation')
 async def join_conversation(sid, data):
-    """Join a conversation room within the client's tenant namespace."""
-    # Get the namespace from the connection
-    namespace = None
-    for ns, clients in connected_clients.items():
-        if sid in clients:
-            namespace = ns
-            break
-    
-    if not namespace:
-        return {"error": "Client not found in any namespace"}
-    
-    conversation_id = data.get("conversation_id")
-    if not conversation_id:
-        return {"error": "Missing conversation_id"}
-    
-    room_name = get_tenant_room(conversation_id)
-    await sio.enter_room(sid, room_name, namespace=namespace)
-    
-    # Update client's room list
-    if sid in connected_clients[namespace]:
-        if room_name not in connected_clients[namespace][sid]["rooms"]:
-            connected_clients[namespace][sid]["rooms"].append(room_name)
-    
-    logger.info(f"Client {sid} joined room {room_name} in namespace {namespace}")
-    
-    return {"success": True, "conversation_id": conversation_id, "namespace": namespace}
+    """Join a conversation room within the client's tenant scope."""
+    try:
+        # Get client info from root namespace
+        if sid not in connected_clients.get("/", {}):
+            return {"error": "Client not found"}
+        
+        client_info = connected_clients["/"][sid]
+        tenant_id = client_info["tenant_id"]
+        
+        conversation_id = data.get("conversation_id")
+        if not conversation_id:
+            return {"error": "Missing conversation_id"}
+        
+        # Join the tenant-scoped conversation room
+        room_name = get_conversation_room(tenant_id, conversation_id)
+        sio.enter_room(sid, room_name)
+        
+        # Update client's room list
+        if room_name not in client_info["rooms"]:
+            client_info["rooms"].append(room_name)
+        
+        logger.info(f"Client {sid} joined conversation {conversation_id} in tenant {tenant_id}")
+        
+        return {"success": True, "conversation_id": conversation_id, "room": room_name}
+        
+    except Exception as e:
+        logger.error(f"Error joining conversation for {sid}: {str(e)}")
+        return {"error": f"Failed to join conversation: {str(e)}"}
 
 @sio.on('leave_room')
 async def leave_room(sid, data):
-    """Leave a conversation room within the client's tenant namespace."""
-    # Get the namespace from the connection
-    namespace = None
-    for ns, clients in connected_clients.items():
-        if sid in clients:
-            namespace = ns
-            break
-    
-    if not namespace:
-        return {"error": "Client not found in any namespace"}
-    
-    conversation_id = data.get("conversation_id")
-    if not conversation_id:
-        return {"error": "Missing conversation_id"}
-    
-    room_name = get_tenant_room(conversation_id)
-    await sio.leave_room(sid, room_name, namespace=namespace)
-    
-    # Update client's room list
-    if sid in connected_clients[namespace] and room_name in connected_clients[namespace][sid]["rooms"]:
-        connected_clients[namespace][sid]["rooms"].remove(room_name)
-    
-    logger.info(f"Client {sid} left room {room_name} in namespace {namespace}")
-    
-    return {"success": True, "conversation_id": conversation_id, "namespace": namespace}
+    """Leave a conversation room."""
+    try:
+        # Get client info from root namespace
+        if sid not in connected_clients.get("/", {}):
+            return {"error": "Client not found"}
+            
+        client_info = connected_clients["/"][sid]
+        tenant_id = client_info["tenant_id"]
+        
+        conversation_id = data.get("conversation_id")
+        if not conversation_id:
+            return {"error": "Missing conversation_id"}
+        
+        # Get the conversation room name
+        room_name = get_conversation_room(tenant_id, conversation_id)
+        
+        # Don't allow leaving tenant room
+        tenant_room = get_tenant_room(tenant_id)
+        if room_name == tenant_room:
+            return {"error": "Cannot leave tenant room"}
+        
+        sio.leave_room(sid, room_name)
+        
+        # Update client's room list
+        if room_name in client_info["rooms"]:
+            client_info["rooms"].remove(room_name)
+        
+        logger.info(f"Client {sid} left conversation {conversation_id} in tenant {tenant_id}")
+        
+        return {"success": True, "conversation_id": conversation_id}
+        
+    except Exception as e:
+        logger.error(f"Error leaving room for {sid}: {str(e)}")
+        return {"error": f"Failed to leave room: {str(e)}"}
 
 @sio.on("typing_status")
 async def on_typing_status(sid, data):
-    """Handle typing status updates from clients within their tenant namespace."""
-    # Get the namespace from the connection
-    namespace = None
-    for ns, clients in connected_clients.items():
-        if sid in clients:
-            namespace = ns
-            break
-    
-    if not namespace:
-        return {"error": "Client not found in any namespace"}
-    
-    conversation_id = data.get("conversation_id")
-    if not conversation_id:
-        return {"error": "Missing conversation_id"}
-    
-    room = get_tenant_room(conversation_id)
-    # Relay to everyone in the room except sender within the same namespace
-    await sio.emit("typing_status", data, room=room, skip_sid=sid, namespace=namespace)
-    return {"success": True}
+    """Handle typing status updates from clients."""
+    try:
+        # Get client info from root namespace
+        if sid not in connected_clients.get("/", {}):
+            return {"error": "Client not found"}
+            
+        client_info = connected_clients["/"][sid]
+        tenant_id = client_info["tenant_id"]
+        
+        conversation_id = data.get("conversation_id")
+        if not conversation_id:
+            return {"error": "Missing conversation_id"}
+        
+        # Get the conversation room
+        room = get_conversation_room(tenant_id, conversation_id)
+        
+        # Add tenant_id to the data if not present
+        if "tenant_id" not in data:
+            data["tenant_id"] = tenant_id
+        
+        # Relay to everyone in the room except sender
+        sio.emit("typing_status", data, room=room, skip_sid=sid)
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Error handling typing status for {sid}: {str(e)}")
+        return {"error": f"Failed to update typing status: {str(e)}"}
 
 @sio.on("messages_read")
 async def on_messages_read(sid, data):
-    """Handle messages read updates from clients within their tenant namespace."""
-    # Get the namespace from the connection
-    namespace = None
-    for ns, clients in connected_clients.items():
-        if sid in clients:
-            namespace = ns
-            break
-    
-    if not namespace:
-        return {"error": "Client not found in any namespace"}
-    
-    conversation_id = data.get("conversation_id")
-    if not conversation_id:
-        return {"error": "Missing conversation_id"}
-    
-    room = get_tenant_room(conversation_id)
-    # Relay to everyone in the room except sender within the same namespace
-    await sio.emit("messages_read", data, room=room, skip_sid=sid, namespace=namespace)
-    return {"success": True}
+    """Handle messages read updates from clients."""
+    try:
+        # Get client info from root namespace
+        if sid not in connected_clients.get("/", {}):
+            return {"error": "Client not found"}
+            
+        client_info = connected_clients["/"][sid]
+        tenant_id = client_info["tenant_id"]
+        
+        conversation_id = data.get("conversation_id")
+        if not conversation_id:
+            return {"error": "Missing conversation_id"}
+        
+        # Get the conversation room
+        room = get_conversation_room(tenant_id, conversation_id)
+        
+        # Add tenant_id to the data if not present
+        if "tenant_id" not in data:
+            data["tenant_id"] = tenant_id
+        
+        # Relay to everyone in the room except sender
+        sio.emit("messages_read", data, room=room, skip_sid=sid)
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Error handling messages read for {sid}: {str(e)}")
+        return {"error": f"Failed to update read status: {str(e)}"}
 
 @sio.on("test_message")
 async def test_message(sid, data):
-    """Test message event for client testing within tenant namespace."""
-    # Get the namespace from the connection
-    namespace = None
-    tenant_id = None
-    for ns, clients in connected_clients.items():
-        if sid in clients:
-            namespace = ns
-            tenant_id = connected_clients[ns][sid].get('tenant_id', 0)
-            break
-    
-    if not namespace:
-        return {"error": "Client not found in any namespace"}
-    
-    conversation_id = data.get("conversation_id")
-    if not conversation_id:
-        return {"error": "Missing conversation_id"}
-    
-    # Create a standardized message format
-    message = {
-        "id": 999,  # Test message ID
-        "content": data.get("content", "Test message"),
-        "type": data.get("type", "text"),
-        "attachment_url": data.get("attachment_url"),
-        "sent_at": datetime.now().isoformat(),
-        "sender": {
-            "id": data.get("user_id", 0),
-            "is_student": data.get("is_student", True)
-        },
-        "conversation_id": conversation_id,
-        "tenant_id": tenant_id
-    }
-    
-    room = get_tenant_room(conversation_id)
-    # Broadcast message to the conversation room within the tenant namespace
-    await sio.emit("new_message", message, room=room, namespace=namespace)
-    logger.info(f"Test message sent to conversation {conversation_id} in namespace {namespace}")
-    
-    return {"success": True, "message": message, "namespace": namespace}
+    """Test message event for client testing."""
+    try:
+        # Get client info from root namespace
+        if sid not in connected_clients.get("/", {}):
+            return {"error": "Client not found"}
+            
+        client_info = connected_clients["/"][sid]
+        tenant_id = client_info["tenant_id"]
+        
+        conversation_id = data.get("conversation_id")
+        if not conversation_id:
+            return {"error": "Missing conversation_id"}
+        
+        # Create a standardized message format
+        message = {
+            "id": 999,  # Test message ID
+            "content": data.get("content", "Test message"),
+            "type": data.get("type", "text"),
+            "attachment_url": data.get("attachment_url"),
+            "sent_at": datetime.now().isoformat(),
+            "sender": {
+                "id": data.get("user_id", 0),
+                "is_student": data.get("is_student", True)
+            },
+            "conversation_id": conversation_id,
+            "tenant_id": tenant_id
+        }
+        
+        # Get the conversation room
+        room = get_conversation_room(tenant_id, conversation_id)
+        
+        # Broadcast message to the conversation room
+        sio.emit("new_message", message, room=room)
+        logger.info(f"Test message sent to conversation {conversation_id} in tenant {tenant_id}")
+        
+        return {"success": True, "message": message}
+        
+    except Exception as e:
+        logger.error(f"Error sending test message for {sid}: {str(e)}")
+        return {"error": f"Failed to send test message: {str(e)}"}
 
 # FastAPI routes
 @app.get("/", tags=["System"], dependencies=[Depends(verify_api_key)])

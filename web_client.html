@@ -128,7 +128,7 @@
         </div>
         <div class="form-group">
           <label for="tenant-id">Tenant ID:</label>
-          <input type="number" id="tenant-id" value="1" min="1" />
+          <input type="number" id="tenant-id" value="2" min="1" />
         </div>
         <div class="form-group">
           <label for="conversation">Conversation:</label>
@@ -136,7 +136,7 @@
         </div>
         <div class="form-group">
           <label for="user-id">User ID:</label>
-          <input type="number" id="user-id" value="123" min="1" />
+          <input type="number" id="user-id" value="1" min="1" />
         </div>
         <div class="form-group">
           <label for="user-type">User Type:</label>
@@ -145,14 +145,23 @@
             <option value="instructor">Instructor</option>
           </select>
         </div>
+        <div class="form-group">
+          <label for="server-url">Server URL:</label>
+          <input
+            type="text"
+            id="server-url"
+            value="https://tuneup.sageteck.com"
+            placeholder="Socket.IO server URL"
+          />
+        </div>
         <button id="connect-btn">Connect</button>
         <button id="disconnect-btn" disabled>Disconnect</button>
       </div>
 
       <div id="connection-info" class="connection-info">
         <div>
-          <strong>Namespace:</strong>
-          <span id="namespace-display">Not connected</span>
+          <strong>Tenant Room:</strong>
+          <span id="tenant-room-display">Not connected</span>
         </div>
         <div>
           <strong>Socket ID:</strong>
@@ -162,13 +171,13 @@
 
       <div id="console" class="console">
         <div class="status">
-          Welcome to the Socket.IO Multi-Tenant Chat Client
+          Welcome to the Socket.IO Multi-Tenant Chat Client (Single Namespace)
         </div>
         <div class="status">
           Configure your connection settings and click Connect
         </div>
         <div class="status">
-          Each tenant gets its own isolated namespace for better security
+          Each tenant gets isolated via rooms for better security
         </div>
       </div>
 
@@ -199,10 +208,11 @@
       const conversationInput = document.getElementById("conversation");
       const userIdInput = document.getElementById("user-id");
       const userTypeSelect = document.getElementById("user-type");
+      const serverUrlInput = document.getElementById("server-url");
       const connectBtn = document.getElementById("connect-btn");
       const disconnectBtn = document.getElementById("disconnect-btn");
       const connectionInfo = document.getElementById("connection-info");
-      const namespaceDisplay = document.getElementById("namespace-display");
+      const tenantRoomDisplay = document.getElementById("tenant-room-display");
       const socketIdDisplay = document.getElementById("socket-id-display");
       const consoleEl = document.getElementById("console");
       const messageInput = document.getElementById("message");
@@ -217,8 +227,8 @@
       // Socket.IO connection
       let socket = null;
       let isConnected = false;
-      let currentNamespace = null;
       let currentTenantId = null;
+      let currentTenantRoom = null;
       let hasJoinedConversation = false;
       let isTyping = false;
       let typingTimeout = null;
@@ -238,15 +248,19 @@
           return;
         }
 
-        // Construct namespace and URL
+        // Store current tenant info
         currentTenantId = tenantId;
-        currentNamespace = `/tenant_${tenantId}`;
-        const namespaceUrl = `http://localhost:8001${currentNamespace}`;
+        currentTenantRoom = `tenant_${tenantId}`;
 
-        logToConsole(`Connecting to namespace: ${currentNamespace}`, "status");
+        // Get server URL from input
+        const serverUrl =
+          serverUrlInput.value.trim() || "https://tuneup.sageteck.com";
 
-        // Create Socket.IO connection to tenant namespace
-        socket = io(namespaceUrl, {
+        logToConsole(`Connecting to server: ${serverUrl}`, "status");
+        logToConsole(`Will join tenant room: ${currentTenantRoom}`, "status");
+
+        // Create Socket.IO connection to root namespace
+        socket = io(serverUrl, {
           auth: {
             id: parseInt(userIdInput.value),
             tenant_id: tenantId,
@@ -260,14 +274,18 @@
         // Connection events
         socket.on("connect", () => {
           isConnected = true;
-          logToConsole(`Connected to namespace: ${currentNamespace}`, "status");
+          logToConsole(`Connected to server successfully!`, "status");
           logToConsole(`Socket ID: ${socket.id}`, "status");
+          logToConsole(
+            `Automatically joined tenant room: ${currentTenantRoom}`,
+            "status"
+          );
 
           // Update UI
           connectBtn.disabled = true;
           disconnectBtn.disabled = false;
           connectionInfo.style.display = "block";
-          namespaceDisplay.textContent = currentNamespace;
+          tenantRoomDisplay.textContent = currentTenantRoom;
           socketIdDisplay.textContent = socket.id;
           messageInputContainer.style.display = "flex";
           controlButtons.style.display = "flex";
@@ -317,7 +335,7 @@
 
         socket.on("test_broadcast", (data) => {
           logToConsole(
-            `Test broadcast: ${data.message} (Room: ${data.room}, Tenant: ${data.tenant_id})`,
+            `Test broadcast: ${data.message} (Conversation Room: ${data.conversation_room}, Tenant: ${data.tenant_id})`,
             "status"
           );
         });
@@ -328,8 +346,8 @@
         if (socket) {
           socket.disconnect();
           socket = null;
-          currentNamespace = null;
           currentTenantId = null;
+          currentTenantRoom = null;
         }
       });
 
@@ -355,7 +373,7 @@
             } else {
               hasJoinedConversation = true;
               logToConsole(
-                `Joined conversation ${conversationId} in namespace ${response.namespace}`,
+                `Joined conversation ${conversationId} in room: ${response.room}`,
                 "status"
               );
             }
@@ -511,7 +529,7 @@
 
         if (type === "message") {
           logEntry.innerHTML = `<span class="time">${timestamp}</span> ${message}`;
-        } else if (type === "status" && message.includes("namespace")) {
+        } else if (type === "status" && message.includes("room")) {
           logEntry.innerHTML = `<span class="time">${timestamp}</span> <span class="namespace">${message}</span>`;
         } else {
           logEntry.innerHTML = `<span class="time">${timestamp}</span> ${message}`;
